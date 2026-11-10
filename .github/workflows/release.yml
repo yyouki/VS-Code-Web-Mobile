@@ -4,6 +4,7 @@ on:
   push:
     tags:
       - "v*"
+  create:
   workflow_dispatch:
     inputs:
       version:
@@ -20,6 +21,7 @@ concurrency:
 
 jobs:
   release:
+    if: github.event_name != 'create' || (github.ref_type == 'branch' && startsWith(github.ref_name, 'release/'))
     name: Build and publish release APK
     runs-on: ubuntu-latest
     steps:
@@ -37,6 +39,9 @@ jobs:
           if [[ "$REF_TYPE" == "tag" ]]; then
             TAG="$REF_NAME"
             VERSION="${TAG#v}"
+          elif [[ "$REF_NAME" == release/* ]]; then
+            VERSION="${REF_NAME#release/}"
+            TAG="v$VERSION"
           else
             VERSION="$INPUT_VERSION"
             TAG="$VERSION"
