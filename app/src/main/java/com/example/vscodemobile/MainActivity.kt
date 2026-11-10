@@ -17,7 +17,7 @@ import android.view.ViewGroup
 import android.view.WindowManager
 import android.webkit.ValueCallback
 import android.webkit.WebChromeClient
-import android.webkit.WebMessageCompat
+import androidx.webkit.WebMessageCompat
 import android.webkit.WebResourceRequest
 import android.webkit.WebView
 import android.webkit.WebViewClient
