@@ -54,7 +54,7 @@ Without all four secrets, the workflow signs a preview APK with the temporary de
 
 ## Local storage bridge limitations
 
-The local-folder integration is an experimental compatibility layer, not a complete browser File System Access API implementation. It covers common folder listing, file read/write, create, rename and delete operations. Some VS Code Web workflows may still require browser APIs that Android WebView does not implement. File transfers through the bridge are limited to 32 MB per file. The folder permission may need to be granted again after reinstalling the app or clearing app data.
+The local-folder integration is an experimental compatibility layer, not a complete browser File System Access API implementation. It covers common folder listing, file read/write, create and delete operations. Some VS Code Web workflows may still require browser APIs that Android WebView does not implement. File transfers through the bridge are limited to 32 MB per file. The folder permission may need to be granted again after reinstalling the app or clearing app data.
 
 A real-device test is required before treating local folder editing as production-ready.
 
