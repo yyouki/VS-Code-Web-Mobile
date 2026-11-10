@@ -28,11 +28,12 @@ jobs:
           distribution: temurin
           java-version: '21'
 
-      - name: Set up Android SDK
-        uses: android-actions/setup-android@v3
-
+      # GitHub's Ubuntu runner already includes Android SDK command-line tools.
+      # Avoid setup-android's legacy "tools" package install, which is no longer published.
       - name: Install Android SDK packages
-        run: sdkmanager --install "platforms;android-36" "build-tools;36.0.0"
+        run: |
+          yes | sdkmanager --licenses
+          sdkmanager --install "platforms;android-36" "build-tools;36.0.0"
 
       - name: Set up Gradle
         uses: gradle/actions/setup-gradle@v4
