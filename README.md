@@ -96,9 +96,18 @@ Open **Remote → Open GitHub Codespaces**, sign in, then create or resume a Cod
 
 The normal `vscode.dev` editor does not have a local shell or runtime. A Codespace is a remote VM/container and its availability and usage allowance depend on the GitHub account plan. This project does not implement a local Android terminal.
 
+## GitHub Codespaces
+
+The Remote menu offers three paths:
+- **Open Codespaces dashboard** opens your account's Codespaces list.
+- **Create / resume Codespace for a repository** accepts `owner/repository` and opens GitHub's quickstart page. GitHub can resume a matching Codespace or offer to create one.
+- **Open existing Codespace by name** accepts the permanent Codespace name and opens `https://CODESPACE-NAME.github.dev` directly in the main WebView.
+
+Once the `*.github.dev` editor opens, the Codespace provides the remote compute environment and integrated terminal. The Codespace has to finish starting before the terminal is ready. GitHub documents both the quickstart route and the permanent-name URL pattern for existing Codespaces.
+
 ## GitHub Copilot
 
-Open **Remote → GitHub Copilot extension** to view the Marketplace listing, or use VS Code's Extensions view and search for **GitHub Copilot**. Install it from the VS Code editor and sign in with the GitHub account that has Copilot access. Copilot in Codespaces is supported through the extension. Extension compatibility in `vscode.dev` depends on whether the extension supports the web extension host; some desktop-only features remain unavailable.
+Choose **Remote → GitHub Copilot extension** to open the Extensions view inside VS Code. Search for **GitHub Copilot**, then install it from the editor. GitHub documents Copilot support in the VS Code web client when opened inside a Codespace. On plain `vscode.dev`, extensions run in the browser web extension host; extensions without web-host support may show as unavailable. Copilot should therefore be installed and used in a Codespace for the most reliable setup.
 
 ## Navigation and display controls
 
