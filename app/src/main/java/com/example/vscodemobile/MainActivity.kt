@@ -264,59 +264,52 @@ class MainActivity : Activity() {
             )
         )
 
-        val keyboardBar = LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL
+        // All mobile keys live in one horizontally scrollable strip.
+        keyboardBar = createKeyRow().apply {
             setBackgroundColor(Color.rgb(37, 37, 38))
-            setPadding(dp(3), dp(3), dp(3), dp(3))
+            setPadding(dp(3), dp(2), dp(3), dp(2))
+            visibility = if (keyBarVisible) View.VISIBLE else View.GONE
         }
 
-        val controlRow = createKeyRow()
-        addControlButton(controlRow, "⌨") { showInternalKeyboard() }
-        addControlButton(controlRow, "−") { changePageZoom(-ZOOM_STEP) }
-        zoomLabelButton = makeKeyButton("100%").apply {
+        addControlButton(keyboardBar, "⌨") { showInternalKeyboard() }
+        addControlButton(keyboardBar, "−") { changePageZoom(-ZOOM_STEP) }
+        zoomLabelButton = makeKeyButton("${(pageZoom * 100).toInt()}%").apply {
             setOnClickListener { resetPageZoom() }
         }
-        rowContent(controlRow).addView(zoomLabelButton)
-        addControlButton(controlRow, "+") { changePageZoom(ZOOM_STEP) }
+        rowContent(keyboardBar).addView(zoomLabelButton)
+        addControlButton(keyboardBar, "+") { changePageZoom(ZOOM_STEP) }
         desktopModeButton = makeKeyButton(if (desktopMode) "Desktop ✓" else "Desktop").apply {
             setOnClickListener { toggleDesktopMode() }
         }
-        rowContent(controlRow).addView(desktopModeButton)
-        addControlButton(controlRow, "Sync") { showSyncHelp() }
-        addControlButton(controlRow, "Codespaces") { openCodespaces() }
+        rowContent(keyboardBar).addView(desktopModeButton)
 
-        val firstRow = createKeyRow()
-        addModifierButton(firstRow, "CTRL", KeyEvent.META_CTRL_ON)
-        addModifierButton(firstRow, "ALT", KeyEvent.META_ALT_ON)
-        addModifierButton(firstRow, "SHIFT", KeyEvent.META_SHIFT_ON)
-        addKeyButton(firstRow, "ESC", KeyEvent.KEYCODE_ESCAPE)
-        addKeyButton(firstRow, "TAB", KeyEvent.KEYCODE_TAB)
-        addKeyButton(firstRow, "F1", KeyEvent.KEYCODE_F1)
-        addKeyButton(firstRow, "F5", KeyEvent.KEYCODE_F5)
-        addKeyButton(firstRow, "P", KeyEvent.KEYCODE_P)
-        addKeyButton(firstRow, "C", KeyEvent.KEYCODE_C)
-        addKeyButton(firstRow, "V", KeyEvent.KEYCODE_V)
-        addKeyButton(firstRow, "X", KeyEvent.KEYCODE_X)
-
-        val secondRow = createKeyRow()
+        addModifierButton(keyboardBar, "CTRL", KeyEvent.META_CTRL_ON)
+        addModifierButton(keyboardBar, "ALT", KeyEvent.META_ALT_ON)
+        addModifierButton(keyboardBar, "SHIFT", KeyEvent.META_SHIFT_ON)
+        addModifierButton(keyboardBar, "META", KeyEvent.META_META_ON)
+        addKeyButton(keyboardBar, "ESC", KeyEvent.KEYCODE_ESCAPE)
+        addKeyButton(keyboardBar, "TAB", KeyEvent.KEYCODE_TAB)
+        addKeyButton(keyboardBar, "F1", KeyEvent.KEYCODE_F1)
+        addKeyButton(keyboardBar, "F5", KeyEvent.KEYCODE_F5)
+        addKeyButton(keyboardBar, "P", KeyEvent.KEYCODE_P)
+        addKeyButton(keyboardBar, "C", KeyEvent.KEYCODE_C)
+        addKeyButton(keyboardBar, "V", KeyEvent.KEYCODE_V)
+        addKeyButton(keyboardBar, "X", KeyEvent.KEYCODE_X)
         listOf("{", "}", "[", "]", "(", ")", ";", ":", "/", "\\", "|", "~", "_")
-            .forEach { addSymbolButton(secondRow, it) }
-        addKeyButton(secondRow, "←", KeyEvent.KEYCODE_DPAD_LEFT)
-        addKeyButton(secondRow, "↓", KeyEvent.KEYCODE_DPAD_DOWN)
-        addKeyButton(secondRow, "↑", KeyEvent.KEYCODE_DPAD_UP)
-        addKeyButton(secondRow, "→", KeyEvent.KEYCODE_DPAD_RIGHT)
-        addKeyButton(secondRow, "HOME", KeyEvent.KEYCODE_MOVE_HOME)
-        addKeyButton(secondRow, "END", KeyEvent.KEYCODE_MOVE_END)
-        addKeyButton(secondRow, "DEL", KeyEvent.KEYCODE_DEL)
+            .forEach { addSymbolButton(keyboardBar, it) }
+        addKeyButton(keyboardBar, "←", KeyEvent.KEYCODE_DPAD_LEFT)
+        addKeyButton(keyboardBar, "↓", KeyEvent.KEYCODE_DPAD_DOWN)
+        addKeyButton(keyboardBar, "↑", KeyEvent.KEYCODE_DPAD_UP)
+        addKeyButton(keyboardBar, "→", KeyEvent.KEYCODE_DPAD_RIGHT)
+        addKeyButton(keyboardBar, "HOME", KeyEvent.KEYCODE_MOVE_HOME)
+        addKeyButton(keyboardBar, "END", KeyEvent.KEYCODE_MOVE_END)
+        addKeyButton(keyboardBar, "DEL", KeyEvent.KEYCODE_DEL)
 
-        keyboardBar.addView(controlRow)
-        keyboardBar.addView(firstRow)
-        keyboardBar.addView(secondRow)
         root.addView(
             keyboardBar,
             LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT,
-                ViewGroup.LayoutParams.WRAP_CONTENT
+                dp(48)
             )
         )
 
