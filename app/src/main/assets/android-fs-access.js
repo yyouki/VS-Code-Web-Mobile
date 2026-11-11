@@ -39,6 +39,27 @@
     }
   };
 
+  // Mirror modifier state from the on-screen or physical keyboard to the native key strip.
+  function reportModifierState(event) {
+    const state = {
+      ctrl: Boolean(event && event.ctrlKey),
+      alt: Boolean(event && event.altKey),
+      shift: Boolean(event && event.shiftKey),
+      meta: Boolean(event && event.metaKey)
+    };
+    window.AndroidFs.postMessage(JSON.stringify({
+      id: "modifier-state",
+      method: "modifierState",
+      args: state
+    }));
+  }
+
+  document.addEventListener("keydown", reportModifierState, true);
+  document.addEventListener("keyup", reportModifierState, true);
+  window.addEventListener("blur", () => {
+    reportModifierState(null);
+  });
+
   function decodeBase64(value) {
     const binary = atob(value || "");
     const bytes = new Uint8Array(binary.length);
