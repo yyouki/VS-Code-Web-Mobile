@@ -422,12 +422,16 @@ class MainActivity : Activity() {
             settings.allowContentAccess = true // SAF returns content:// URIs for selected Android files.
             settings.javaScriptCanOpenWindowsAutomatically = true
             settings.setSupportMultipleWindows(true)
-            // Zoom is controlled with CSS page zoom; native WebView pinch gestures remain disabled.
-            settings.setSupportZoom(false)
+            // Support viewport-aware zoomBy while hiding Android's built-in pinch/zoom controls.
+            settings.setSupportZoom(true)
             settings.builtInZoomControls = false
             settings.displayZoomControls = false
             settings.useWideViewPort = true
-            settings.loadWithOverviewMode = desktopMode
+            // Keep desktop page width intact so it can be panned instead of auto-shrunk/clipped.
+            settings.loadWithOverviewMode = false
+            isHorizontalScrollBarEnabled = true
+            isVerticalScrollBarEnabled = true
+            pointerIcon = PointerIcon.getSystemIcon(this@MainActivity, PointerIcon.TYPE_ARROW)
             settings.cacheMode = android.webkit.WebSettings.LOAD_DEFAULT
             settings.textZoom = 100
             originalUserAgent = settings.userAgentString
@@ -549,8 +553,26 @@ class MainActivity : Activity() {
             setAcceptThirdPartyCookies(editor, true)
         }
 
-        root.addView(
+        editorContainer = FrameLayout(this)
+        editorContainer.addView(
             editor,
+            FrameLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.MATCH_PARENT
+            )
+        )
+        cursorOverlay = CursorOverlayView(this, editor).apply {
+            visibility = View.GONE
+        }
+        editorContainer.addView(
+            cursorOverlay,
+            FrameLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.MATCH_PARENT
+            )
+        )
+        root.addView(
+            editorContainer,
             LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT,
                 0,
@@ -576,6 +598,10 @@ class MainActivity : Activity() {
             setOnClickListener { toggleDesktopMode() }
         }
         rowContent(keyboardBar).addView(desktopModeButton)
+        cursorModeButton = makeKeyButton("Cursor OFF").apply {
+            setOnClickListener { toggleCursorMode() }
+        }
+        rowContent(keyboardBar).addView(cursorModeButton)
 
         addModifierButton(keyboardBar, "CTRL", KeyEvent.META_CTRL_ON)
         addModifierButton(keyboardBar, "ALT", KeyEvent.META_ALT_ON)
