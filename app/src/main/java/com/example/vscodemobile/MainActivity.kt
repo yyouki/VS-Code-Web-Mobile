@@ -27,6 +27,10 @@ import android.widget.ImageView
 import android.widget.LinearLayout
 import android.widget.TextView
 import android.widget.Toast
+import androidx.core.view.ViewCompat
+import androidx.core.view.WindowCompat
+import androidx.core.view.WindowInsetsCompat
+import androidx.core.view.WindowInsetsControllerCompat
 import androidx.webkit.JavaScriptReplyProxy
 import androidx.webkit.WebViewCompat
 import androidx.webkit.WebViewFeature
@@ -53,6 +57,19 @@ class MainActivity : Activity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
 
+        // Allow content into display cutouts while keeping interactive controls in safe insets.
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+            window.attributes = window.attributes.apply {
+                layoutInDisplayCutoutMode =
+                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.VANILLA_ICE_CREAM) {
+                        WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_ALWAYS
+                    } else {
+                        WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_SHORT_EDGES
+                    }
+            }
+        }
+        enableImmersiveStatusBar()
+
         selectedTreeUri = getSharedPreferences(PREFERENCES, MODE_PRIVATE)
             .getString(KEY_TREE_URI, null)
             ?.let { runCatching { Uri.parse(it) }.getOrNull() }
@@ -64,6 +81,21 @@ class MainActivity : Activity() {
         val root = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             setBackgroundColor(Color.rgb(30, 30, 30))
+
+            // Respect the notch and navigation gesture area in edge-to-edge mode.
+            ViewCompat.setOnApplyWindowInsetsListener(this) { view, insets ->
+                val safeInsets = insets.getInsets(
+                    WindowInsetsCompat.Type.displayCutout() or
+                        WindowInsetsCompat.Type.navigationBars()
+                )
+                view.setPadding(
+                    safeInsets.left,
+                    safeInsets.top,
+                    safeInsets.right,
+                    safeInsets.bottom
+                )
+                insets
+            }
         }
 
         val header = LinearLayout(this).apply {
@@ -116,6 +148,14 @@ class MainActivity : Activity() {
             }
 
             webViewClient = object : WebViewClient() {
+                override fun onPageFinished(view: WebView, url: String) {
+                    super.onPageFinished(view, url)
+                    val loadedUri = Uri.parse(url)
+                    if (loadedUri.scheme == "https" && loadedUri.host == "vscode.dev") {
+                        restoreRememberedDirectory(view)
+                    }
+                }
+
                 override fun shouldOverrideUrlLoading(
                     view: WebView,
                     request: WebResourceRequest
@@ -210,6 +250,8 @@ class MainActivity : Activity() {
         )
 
         setContentView(root)
+        ViewCompat.requestApplyInsets(root)
+        enableImmersiveStatusBar()
         installAndroidFileSystemBridge()
         editor.loadUrl(VSCODE_WEB_URL)
     }
@@ -350,6 +392,28 @@ class MainActivity : Activity() {
         }
     }
 
+    private fun restoreRememberedDirectory(view: WebView) {
+        val treeUri = selectedTreeUri ?: return
+        val permissionGranted = contentResolver.persistedUriPermissions.any {
+            it.uri == treeUri && it.isReadPermission
+        }
+
+        if (!permissionGranted) {
+            selectedTreeUri = null
+            getSharedPreferences(PREFERENCES, MODE_PRIVATE)
+                .edit()
+                .remove(KEY_TREE_URI)
+                .apply()
+            return
+        }
+
+        val name = runCatching { displayName(treeUri) }.getOrDefault("Selected folder")
+        val script = "window.__androidProvideDirectory(" +
+            JSONObject.quote(treeUri.toString()) + "," +
+            JSONObject.quote(name) + ");"
+        view.evaluateJavascript(script, null)
+    }
+
     private fun performStorageOperation(method: String, args: JSONObject): Any {
         return when (method) {
             "list" -> listDirectory(args.getString("uri"))
@@ -373,6 +437,12 @@ class MainActivity : Activity() {
                 JSONObject().put("deleted", true)
             }
             "rename" -> renameEntry(args.getString("uri"), args.getString("name"))
+            "move" -> moveEntry(
+                args.getString("uri"),
+                args.getString("sourceParentUri"),
+                args.getString("destinationUri"),
+                args.getString("name")
+            )
             else -> throw IllegalArgumentException("Unsupported storage operation: $method")
         }
     }
@@ -530,6 +600,48 @@ class MainActivity : Activity() {
         return JSONObject()
             .put("uri", renamedUri.toString())
             .put("name", newName)
+    }
+
+    private fun moveEntry(
+        uriString: String,
+        sourceParentUriString: String,
+        destinationUriString: String,
+        newName: String
+    ): JSONObject {
+        requireSafeName(newName)
+        val treeUri = getSelectedTreeUri()
+        val itemUri = Uri.parse(uriString)
+        val sourceParentId = documentIdFor(Uri.parse(sourceParentUriString), treeUri)
+        val destinationParentId = documentIdFor(Uri.parse(destinationUriString), treeUri)
+        val sourceParent = DocumentsContract.buildDocumentUriUsingTree(treeUri, sourceParentId)
+        val destinationParent = DocumentsContract.buildDocumentUriUsingTree(treeUri, destinationParentId)
+        val currentName = displayName(itemUri)
+
+        val movedUri = if (sourceParentId == destinationParentId) {
+            if (currentName == newName) {
+                itemUri
+            } else {
+                DocumentsContract.renameDocument(contentResolver, itemUri, newName)
+                    ?: throw IllegalStateException("Android could not rename this item.")
+            }
+        } else {
+            var result = DocumentsContract.moveDocument(
+                contentResolver,
+                itemUri,
+                sourceParent,
+                destinationParent
+            ) ?: throw IllegalStateException("This storage provider does not support moving items.")
+
+            if (currentName != newName) {
+                result = DocumentsContract.renameDocument(contentResolver, result, newName)
+                    ?: throw IllegalStateException("The item moved, but Android could not rename it.")
+            }
+            result
+        }
+
+        return JSONObject()
+            .put("uri", movedUri.toString())
+            .put("name", displayName(movedUri))
     }
 
     private fun requireSafeName(name: String) {
@@ -869,6 +981,26 @@ class MainActivity : Activity() {
     }
 
     private fun dp(value: Int): Int = (value * resources.displayMetrics.density).toInt()
+
+    private fun enableImmersiveStatusBar() {
+        WindowCompat.setDecorFitsSystemWindows(window, false)
+        WindowCompat.getInsetsController(window, window.decorView).apply {
+            // A swipe from the top edge temporarily reveals the status bar.
+            systemBarsBehavior =
+                WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
+            hide(WindowInsetsCompat.Type.statusBars())
+        }
+    }
+
+    override fun onResume() {
+        super.onResume()
+        enableImmersiveStatusBar()
+    }
+
+    override fun onWindowFocusChanged(hasFocus: Boolean) {
+        super.onWindowFocusChanged(hasFocus)
+        if (hasFocus) enableImmersiveStatusBar()
+    }
 
     @Deprecated("Legacy callback retained for wide device compatibility.")
     override fun onBackPressed() {
