@@ -1415,6 +1415,7 @@ class MainActivity : Activity() {
                     "Settings Sync: Turn On",
                     "Open VS Code in system browser (sign-in fallback)",
                     "Open VS Code Command Palette",
+                    "Connect to a Remote Tunnel",
                     "Toggle integrated terminal",
                     "Create new integrated terminal",
                     "Open Codespaces dashboard",
@@ -1428,12 +1429,13 @@ class MainActivity : Activity() {
                     1 -> openSettingsSync()
                     2 -> openVsCodeInBrowserForSignIn()
                     3 -> openVsCodeRemoteCommandPalette()
-                    4 -> toggleIntegratedTerminal()
-                    5 -> createIntegratedTerminal()
-                    6 -> openCodespaces()
-                    7 -> promptCreateCodespace()
-                    8 -> promptOpenCodespaceByName()
-                    9 -> openCopilotExtension()
+                    4 -> connectRemoteTunnel()
+                    5 -> toggleIntegratedTerminal()
+                    6 -> createIntegratedTerminal()
+                    7 -> openCodespaces()
+                    8 -> promptCreateCodespace()
+                    9 -> promptOpenCodespaceByName()
+                    10 -> openCopilotExtension()
                 }
             }
             .setNegativeButton("Close", null)
@@ -1550,6 +1552,13 @@ class MainActivity : Activity() {
             "In VS Code, run GitHub Repositories: Open Repository... or Remote Tunnels: Connect to Tunnel.",
             Toast.LENGTH_LONG
         ).show()
+    }
+
+    private fun connectRemoteTunnel() {
+        runQuickPickCommand(
+            "Remote Tunnels: Connect to Tunnel",
+            "Install/enable the Remote Tunnels extension if needed, then run Remote Tunnels: Connect to Tunnel."
+        )
     }
 
     private fun openCodespaces() {
