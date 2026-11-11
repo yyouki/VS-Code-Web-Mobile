@@ -528,24 +528,40 @@ private class CursorOverlayView(
     }
 
     private fun dispatchMouseEvent(action: Int, eventTime: Long) {
-        if (action == MotionEvent.ACTION_DOWN) {
-            // The emulated mouse press begins after the touchpad long-press delay.
-            pointerDownTime = eventTime
+        val density = resources.displayMetrics.density.coerceAtLeast(1f)
+        val pageScale = target.scale.takeIf { it > 0f } ?: 1f
+        val cssX = cursorX / density / pageScale
+        val cssY = cursorY / density / pageScale
+        val eventNames = when (action) {
+            MotionEvent.ACTION_DOWN -> "down"
+            MotionEvent.ACTION_MOVE -> "move"
+            MotionEvent.ACTION_UP -> "up"
+            else -> return
         }
-        val mouseEvent = MotionEvent.obtain(
-            pointerDownTime,
-            eventTime,
-            action,
-            cursorX,
-            cursorY,
-            0
-        )
-        mouseEvent.source = InputDevice.SOURCE_MOUSE
-        mouseEvent.setButtonState(
-            if (action == MotionEvent.ACTION_UP) 0 else MotionEvent.BUTTON_PRIMARY
-        )
-        target.dispatchTouchEvent(mouseEvent)
-        mouseEvent.recycle()
+        val isRelease = action == MotionEvent.ACTION_UP
+        val shouldClick = isRelease && !dragSelecting
+        val buttons = if (isRelease) 0 else 1
+        val clickScript = if (shouldClick) "target.dispatchEvent(new MouseEvent('click', common));" else ""
+        val script = """
+            (() => {
+              const x = $cssX;
+              const y = $cssY;
+              const target = document.elementFromPoint(x, y) || document;
+              const common = {
+                bubbles: true, cancelable: true, view: window,
+                clientX: x, clientY: y, screenX: x, screenY: y,
+                button: 0, buttons: $buttons
+              };
+              if (typeof PointerEvent !== 'undefined') {
+                target.dispatchEvent(new PointerEvent('pointer$eventNames', {
+                  ...common, pointerId: 1, pointerType: 'mouse', isPrimary: true
+                }));
+              }
+              target.dispatchEvent(new MouseEvent('mouse$eventNames', common));
+              $clickScript
+            })();
+        """.trimIndent()
+        target.evaluateJavascript(script, null)
     }
 
     private fun sendWheel(deltaX: Float, deltaY: Float) {
