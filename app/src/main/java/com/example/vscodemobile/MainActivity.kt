@@ -922,19 +922,36 @@ class MainActivity : Activity() {
     }
 
     /**
-     * Apply browser-style page scale with WebView.zoomBy. CSS zoom had left
-     * the editor occupying only part of the screen below 100%.
+     * Track the factor applied by this app instead of WebView.scale.
+     * WebView.scale includes the renderer's device scale and is not the
+     * zoom percentage displayed in the toolbar.
      */
     private fun applyNativePageZoom(view: WebView = editor) {
         if (view.width <= 0 || view.height <= 0) return
         view.post {
-            val currentScale = view.scale.takeIf { it > 0f } ?: 1f
-            val factor = (pageZoom / currentScale).coerceIn(0.25f, 4f)
-            if (kotlin.math.abs(factor - 1f) > 0.01f) {
+            val factor = (pageZoom / appliedPageZoom).coerceIn(0.25f, 4f)
+            if (kotlin.math.abs(factor - 1f) > 0.005f) {
                 runCatching { view.zoomBy(factor) }
+                    .onSuccess { appliedPageZoom = pageZoom }
+                    .onFailure {
+                        Toast.makeText(this, "WebView could not apply page zoom.", Toast.LENGTH_SHORT).show()
+                    }
             }
             zoomLabelButton?.text = "${(pageZoom * 100).toInt()}%"
         }
+    }
+
+    private fun applyPinchZoom(scaleFactor: Float) {
+        val nextZoom = (pageZoom * scaleFactor).coerceIn(MIN_PAGE_ZOOM, MAX_PAGE_ZOOM)
+        if (nextZoom == pageZoom || !::editor.isInitialized) return
+
+        val factor = nextZoom / pageZoom
+        runCatching { editor.zoomBy(factor) }
+            .onSuccess {
+                pageZoom = nextZoom
+                appliedPageZoom *= factor
+                persistPageZoom()
+            }
     }
 
     private fun applyPagePresentation(view: WebView) {
