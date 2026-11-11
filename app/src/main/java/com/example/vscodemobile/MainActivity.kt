@@ -27,7 +27,6 @@ import androidx.webkit.WebMessageCompat
 import android.webkit.WebResourceRequest
 import android.webkit.WebView
 import android.webkit.WebViewClient
-import android.view.inputmethod.InputMethodManager
 import android.widget.Button
 import android.widget.EditText
 import android.widget.HorizontalScrollView
@@ -269,7 +268,6 @@ class MainActivity : Activity() {
             visibility = if (keyBarVisible) View.VISIBLE else View.GONE
         }
 
-        addControlButton(keyboardBar, "⌨") { showInternalKeyboard() }
         addControlButton(keyboardBar, "−") { changePageZoom(-ZOOM_STEP) }
         zoomLabelButton = makeKeyButton("${(pageZoom * 100).toInt()}%").apply {
             setOnClickListener { resetPageZoom() }
@@ -653,32 +651,6 @@ class MainActivity : Activity() {
         val button = makeKeyButton(label)
         button.setOnClickListener { onClick() }
         rowContent(row).addView(button)
-    }
-
-    private fun showInternalKeyboard() {
-        editor.requestFocusFromTouch()
-        val focusScript = """
-            (function () {
-              const editorInput = document.querySelector(
-                ".monaco-editor textarea.inputarea, .monaco-editor textarea"
-              );
-              if (editorInput) {
-                editorInput.focus();
-                editorInput.click();
-              }
-            })();
-        """.trimIndent()
-
-        editor.evaluateJavascript(focusScript) {
-            editor.postDelayed({
-                val inputMethodManager =
-                    getSystemService(INPUT_METHOD_SERVICE) as InputMethodManager
-                inputMethodManager.showSoftInput(
-                    editor,
-                    InputMethodManager.SHOW_IMPLICIT
-                )
-            }, 150)
-        }
     }
 
     private fun makeHeaderButton(label: String, onClick: () -> Unit): Button {
@@ -1342,6 +1314,9 @@ class MainActivity : Activity() {
 
         return HorizontalScrollView(this).apply {
             isHorizontalScrollBarEnabled = false
+            isFocusable = false
+            isFocusableInTouchMode = false
+            descendantFocusability = ViewGroup.FOCUS_AFTER_DESCENDANTS
             addView(
                 content,
                 ViewGroup.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, dp(46))
