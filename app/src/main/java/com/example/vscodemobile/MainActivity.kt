@@ -147,6 +147,7 @@ private class CursorOverlayView(
     private var lastTouchX = 0f
     private var lastTouchY = 0f
     private var lastTwoFingerY = 0f
+    private var twoFingerGesture = false
     private var initialized = false
 
     init {
@@ -192,7 +193,10 @@ private class CursorOverlayView(
                 return true
             }
             MotionEvent.ACTION_POINTER_DOWN -> {
-                if (event.pointerCount >= 2) lastTwoFingerY = averagePointerY(event)
+                if (event.pointerCount >= 2) {
+                    twoFingerGesture = true
+                    lastTwoFingerY = averagePointerY(event)
+                }
                 return true
             }
             MotionEvent.ACTION_MOVE -> {
@@ -212,11 +216,17 @@ private class CursorOverlayView(
                 return true
             }
             MotionEvent.ACTION_UP -> {
-                sendClick(event.eventTime)
-                performClick()
+                if (!twoFingerGesture) {
+                    sendClick(event.eventTime)
+                    performClick()
+                }
+                twoFingerGesture = false
                 return true
             }
-            MotionEvent.ACTION_CANCEL -> return true
+            MotionEvent.ACTION_CANCEL -> {
+                twoFingerGesture = false
+                return true
+            }
         }
         return true
     }
