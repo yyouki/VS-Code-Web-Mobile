@@ -9,6 +9,8 @@ import android.os.Build
 import android.os.Bundle
 import android.os.Message
 import android.os.SystemClock
+import android.window.OnBackInvokedCallback
+import android.window.OnBackInvokedDispatcher
 import android.provider.DocumentsContract
 import android.util.Base64
 import android.view.Gravity
@@ -63,6 +65,7 @@ class MainActivity : Activity() {
     private var pageZoom = 1.0f
     private var zoomLabelButton: Button? = null
     private var desktopModeButton: Button? = null
+    private var backInvokedCallback: OnBackInvokedCallback? = null
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -79,6 +82,7 @@ class MainActivity : Activity() {
             }
         }
         enableImmersiveStatusBar()
+        registerSystemBackCallback()
 
         val preferences = getSharedPreferences(PREFERENCES, MODE_PRIVATE)
         selectedTreeUri = preferences.getString(KEY_TREE_URI, null)
@@ -1237,8 +1241,18 @@ class MainActivity : Activity() {
         if (hasFocus) enableImmersiveStatusBar()
     }
 
-    @Deprecated("Legacy callback retained for wide device compatibility.")
-    override fun onBackPressed() {
+    private fun registerSystemBackCallback() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            val callback = OnBackInvokedCallback { handleBackNavigation() }
+            backInvokedCallback = callback
+            onBackInvokedDispatcher.registerOnBackInvokedCallback(
+                OnBackInvokedDispatcher.PRIORITY_DEFAULT,
+                callback
+            )
+        }
+    }
+
+    private fun handleBackNavigation() {
         if (authPopupDialog?.isShowing == true) {
             closeAuthenticationPopup()
             return
@@ -1258,11 +1272,22 @@ class MainActivity : Activity() {
         }
     }
 
+    @Deprecated("Legacy callback retained for Android versions below 13.")
+    override fun onBackPressed() {
+        handleBackNavigation()
+    }
+
     override fun onDestroy() {
         pendingFileChooser?.onReceiveValue(null)
         pendingFileChooser = null
         pendingBridgePicker = null
         authPopupDialog?.dismiss()
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            backInvokedCallback?.let {
+                onBackInvokedDispatcher.unregisterOnBackInvokedCallback(it)
+            }
+        }
+        backInvokedCallback = null
         authPopupDialog = null
         authPopupWebView = null
         ioExecutor.shutdownNow()
