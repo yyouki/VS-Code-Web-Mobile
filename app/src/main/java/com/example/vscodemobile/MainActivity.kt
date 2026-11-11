@@ -1144,6 +1144,83 @@ class MainActivity : Activity() {
         rowContent(row).addView(button)
     }
 
+    private fun showCursorSettingsDialog() {
+        val panel = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(dp(20), dp(12), dp(20), dp(8))
+        }
+
+        fun addSettingLabel(label: String) {
+            panel.addView(TextView(this).apply {
+                text = label
+                textSize = 13f
+                setTextColor(Color.WHITE)
+                setPadding(0, dp(10), 0, dp(3))
+            })
+        }
+
+        addSettingLabel("Pointer speed")
+        val speedSlider = SeekBar(this).apply {
+            max = 25 // 0.5x to 3.0x, in 0.1x steps.
+            progress = ((cursorSpeed - 0.5f) * 10f).toInt().coerceIn(0, max)
+        }
+        panel.addView(speedSlider)
+
+        addSettingLabel("Pointer size")
+        val sizeSlider = SeekBar(this).apply {
+            max = 32 // 16dp to 48dp.
+            progress = (cursorSizeDp - 16).coerceIn(0, max)
+        }
+        panel.addView(sizeSlider)
+
+        addSettingLabel("Pointer color")
+        val colors = RadioGroup(this).apply {
+            orientation = RadioGroup.HORIZONTAL
+        }
+        val choices = listOf(
+            Triple(1, "White", Color.WHITE),
+            Triple(2, "Yellow", Color.YELLOW),
+            Triple(3, "Cyan", Color.CYAN)
+        )
+        choices.forEach { (id, label, color) ->
+            colors.addView(RadioButton(this).apply {
+                this.id = id
+                text = label
+                setTextColor(Color.WHITE)
+                buttonTintList = android.content.res.ColorStateList.valueOf(color)
+            })
+        }
+        val selectedColorId = when (cursorColor) {
+            Color.YELLOW -> 2
+            Color.CYAN -> 3
+            else -> 1
+        }
+        colors.check(selectedColorId)
+        panel.addView(colors)
+
+        AlertDialog.Builder(this)
+            .setTitle("Cursor settings")
+            .setView(panel)
+            .setPositiveButton("Save") { _, _ ->
+                cursorSpeed = (0.5f + speedSlider.progress * 0.1f).coerceIn(0.5f, 3.0f)
+                cursorSizeDp = (16 + sizeSlider.progress).coerceIn(16, 48)
+                cursorColor = when (colors.checkedRadioButtonId) {
+                    2 -> Color.YELLOW
+                    3 -> Color.CYAN
+                    else -> Color.WHITE
+                }
+                getSharedPreferences(PREFERENCES, MODE_PRIVATE)
+                    .edit()
+                    .putFloat(KEY_CURSOR_SPEED, cursorSpeed)
+                    .putInt(KEY_CURSOR_SIZE, cursorSizeDp)
+                    .putInt(KEY_CURSOR_COLOR, cursorColor)
+                    .apply()
+                cursorOverlay.updateSettings(cursorSizeDp, cursorSpeed, cursorColor)
+            }
+            .setNegativeButton("Cancel", null)
+            .show()
+    }
+
     private fun toggleCursorMode() {
         cursorModeEnabled = !cursorModeEnabled
         cursorOverlay.visibility = if (cursorModeEnabled) View.VISIBLE else View.GONE
