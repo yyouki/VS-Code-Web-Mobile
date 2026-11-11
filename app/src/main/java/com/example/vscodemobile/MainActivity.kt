@@ -11,6 +11,9 @@ import android.os.Message
 import android.os.SystemClock
 import android.text.InputType
 import android.view.View
+import android.view.MotionEvent
+import android.view.ViewConfiguration
+import android.view.inputmethod.InputMethodManager
 import android.window.OnBackInvokedCallback
 import android.window.OnBackInvokedDispatcher
 import android.provider.DocumentsContract
@@ -51,6 +54,10 @@ class MainActivity : Activity() {
     private lateinit var keyboardBar: HorizontalScrollView
     private val modifierButtons = mutableMapOf<Int, Button>()
     private var activeModifiers = 0
+    private var editorTouchStartX = 0f
+    private var editorTouchStartY = 0f
+    private var editorGestureMoved = false
+    private var editorTouchSlop = 8f
     private val ioExecutor = Executors.newSingleThreadExecutor()
 
     private data class PendingPicker(
@@ -96,6 +103,7 @@ class MainActivity : Activity() {
         keyBarVisible = preferences.getBoolean(KEY_KEYBAR_VISIBLE, true)
 
         window.setSoftInputMode(WindowManager.LayoutParams.SOFT_INPUT_ADJUST_RESIZE)
+        editorTouchSlop = ViewConfiguration.get(this).scaledTouchSlop.toFloat()
         window.statusBarColor = Color.rgb(30, 30, 30)
         window.navigationBarColor = Color.rgb(30, 30, 30)
 
@@ -180,6 +188,31 @@ class MainActivity : Activity() {
 
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
                 settings.safeBrowsingEnabled = true
+            }
+
+            setOnTouchListener { view, event ->
+                when (event.actionMasked) {
+                    MotionEvent.ACTION_DOWN -> {
+                        editorTouchStartX = event.x
+                        editorTouchStartY = event.y
+                        editorGestureMoved = false
+                    }
+                    MotionEvent.ACTION_MOVE -> {
+                        val deltaX = kotlin.math.abs(event.x - editorTouchStartX)
+                        val deltaY = kotlin.math.abs(event.y - editorTouchStartY)
+                        if (deltaX > editorTouchSlop || deltaY > editorTouchSlop) {
+                            editorGestureMoved = true
+                        }
+                    }
+                    MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
+                        if (editorGestureMoved) {
+                            // A swipe/scroll should dismiss the IME without blurring Monaco's editor.
+                            view.postDelayed({ hideKeyboardAfterEditorScroll() }, 90)
+                        }
+                        editorGestureMoved = false
+                    }
+                }
+                false // Preserve WebView taps, text selection, and scrolling behavior.
             }
 
             webViewClient = object : WebViewClient() {
@@ -268,6 +301,7 @@ class MainActivity : Activity() {
             visibility = if (keyBarVisible) View.VISIBLE else View.GONE
         }
 
+        addControlButton(keyboardBar, "⌨") { showInternalKeyboard() }
         addControlButton(keyboardBar, "−") { changePageZoom(-ZOOM_STEP) }
         zoomLabelButton = makeKeyButton("${(pageZoom * 100).toInt()}%").apply {
             setOnClickListener { resetPageZoom() }
@@ -568,7 +602,7 @@ class MainActivity : Activity() {
     private fun promptOpenRepository() {
         val input = EditText(this).apply {
             hint = "owner/repository"
-            singleLine = true
+            setSingleLine(true)
             inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_URI
             setTextColor(Color.WHITE)
         }
@@ -596,7 +630,7 @@ class MainActivity : Activity() {
     private fun promptOpenTunnel() {
         val input = EditText(this).apply {
             hint = "https://vscode.dev/tunnel/machine/folder"
-            singleLine = true
+            setSingleLine(true)
             inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_URI
             setTextColor(Color.WHITE)
         }
@@ -651,6 +685,39 @@ class MainActivity : Activity() {
         val button = makeKeyButton(label)
         button.setOnClickListener { onClick() }
         rowContent(row).addView(button)
+    }
+
+    private fun showInternalKeyboard() {
+        editor.requestFocusFromTouch()
+        val focusScript = """
+            (function () {
+              const input = document.querySelector(
+                ".monaco-editor textarea.inputarea, .monaco-editor textarea"
+              );
+              if (input) input.focus();
+            })();
+        """.trimIndent()
+
+        editor.evaluateJavascript(focusScript) {
+            editor.postDelayed({
+                val inputMethodManager =
+                    getSystemService(INPUT_METHOD_SERVICE) as InputMethodManager
+                WindowCompat.getInsetsController(window, window.decorView)
+                    .show(WindowInsetsCompat.Type.ime())
+                inputMethodManager.showSoftInput(
+                    editor,
+                    InputMethodManager.SHOW_IMPLICIT
+                )
+            }, 120)
+        }
+    }
+
+    private fun hideKeyboardAfterEditorScroll() {
+        WindowCompat.getInsetsController(window, window.decorView)
+            .hide(WindowInsetsCompat.Type.ime())
+        val inputMethodManager =
+            getSystemService(INPUT_METHOD_SERVICE) as InputMethodManager
+        inputMethodManager.hideSoftInputFromWindow(editor.windowToken, 0)
     }
 
     private fun makeHeaderButton(label: String, onClick: () -> Unit): Button {
