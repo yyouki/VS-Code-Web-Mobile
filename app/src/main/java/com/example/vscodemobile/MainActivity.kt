@@ -397,11 +397,213 @@ class MainActivity : Activity() {
         authPopupDialog?.dismiss()
     }
 
-    private fun addControlButton(
-        row: HorizontalScrollView,
-        label: String,
-        onClick: () -> Unit
-    ) {
+    private fun toggleKeyboardBar() {
+        keyBarVisible = !keyBarVisible
+        keyboardBar.visibility = if (keyBarVisible) View.VISIBLE else View.GONE
+        getSharedPreferences(PREFERENCES, MODE_PRIVATE)
+            .edit()
+            .putBoolean(KEY_KEYBAR_VISIBLE, keyBarVisible)
+            .apply()
+    }
+
+    private fun syncModifierButtons() {
+        modifierButtons.forEach { (flag, button) ->
+            val label = when (flag) {
+                KeyEvent.META_CTRL_ON -> "CTRL"
+                KeyEvent.META_ALT_ON -> "ALT"
+                KeyEvent.META_SHIFT_ON -> "SHIFT"
+                KeyEvent.META_META_ON -> "META"
+                else -> button.text.toString().substringBefore(" ✓")
+            }
+            button.text = if ((activeModifiers and flag) != 0) "$label ✓" else label
+        }
+    }
+
+    private fun applyModifierState(args: JSONObject) {
+        activeModifiers = 0
+        if (args.optBoolean("ctrl")) activeModifiers = activeModifiers or KeyEvent.META_CTRL_ON
+        if (args.optBoolean("alt")) activeModifiers = activeModifiers or KeyEvent.META_ALT_ON
+        if (args.optBoolean("shift")) activeModifiers = activeModifiers or KeyEvent.META_SHIFT_ON
+        if (args.optBoolean("meta")) activeModifiers = activeModifiers or KeyEvent.META_META_ON
+        runOnUiThread { syncModifierButtons() }
+    }
+
+    private fun changePageZoom(delta: Float) {
+        val nextZoom = (pageZoom + delta).coerceIn(MIN_PAGE_ZOOM, MAX_PAGE_ZOOM)
+        if (nextZoom == pageZoom) return
+
+        val ratio = nextZoom / pageZoom
+        pageZoom = nextZoom
+        if (::editor.isInitialized && editor.url != null) {
+            runCatching { editor.zoomBy(ratio) }
+        }
+        getSharedPreferences(PREFERENCES, MODE_PRIVATE)
+            .edit()
+            .putFloat(KEY_PAGE_ZOOM, pageZoom)
+            .apply()
+        zoomLabelButton?.text = "${(pageZoom * 100).toInt()}%"
+    }
+
+    private fun resetPageZoom() {
+        val ratio = 1.0f / pageZoom
+        if (::editor.isInitialized && editor.url != null && pageZoom != 1.0f) {
+            runCatching { editor.zoomBy(ratio) }
+        }
+        pageZoom = 1.0f
+        getSharedPreferences(PREFERENCES, MODE_PRIVATE)
+            .edit()
+            .putFloat(KEY_PAGE_ZOOM, pageZoom)
+            .apply()
+        zoomLabelButton?.text = "100%"
+    }
+
+    private fun applySavedPageZoom(view: WebView) {
+        if (pageZoom != 1.0f) {
+            view.post {
+                if (!isFinishing && !isDestroyed) {
+                    runCatching { view.zoomBy(pageZoom) }
+                }
+            }
+        }
+        zoomLabelButton?.text = "${(pageZoom * 100).toInt()}%"
+    }
+
+    private fun asDesktopUserAgent(userAgent: String): String {
+        val chromeVersion = Regex("Chrome/([0-9.]+)")
+            .find(userAgent)
+            ?.groupValues
+            ?.getOrNull(1)
+            ?: "131.0.0.0"
+        return "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 " +
+            "(KHTML, like Gecko) Chrome/$chromeVersion Safari/537.36"
+    }
+
+    private fun toggleDesktopMode() {
+        desktopMode = !desktopMode
+        getSharedPreferences(PREFERENCES, MODE_PRIVATE)
+            .edit()
+            .putBoolean(KEY_DESKTOP_MODE, desktopMode)
+            .apply()
+
+        val userAgent = originalUserAgent ?: editor.settings.userAgentString
+        editor.settings.userAgentString =
+            if (desktopMode) asDesktopUserAgent(userAgent) else userAgent
+        editor.settings.useWideViewPort = true
+        editor.settings.loadWithOverviewMode = desktopMode
+        desktopModeButton?.text = if (desktopMode) "Desktop ✓" else "Desktop"
+
+        editor.evaluateJavascript(
+            "document.querySelector('meta[name=viewport]')?.setAttribute('content'," +
+                "'width=device-width, initial-scale=1.0');",
+            null
+        )
+        val currentUrl = editor.url
+            ?.takeIf { Uri.parse(it).scheme == "https" }
+            ?: VSCODE_WEB_URL
+        editor.loadUrl(currentUrl)
+    }
+
+    private fun showRemoteDialog() {
+        AlertDialog.Builder(this)
+            .setTitle("Open remote workspace")
+            .setItems(
+                arrayOf(
+                    "Open GitHub repository",
+                    "Connect to VS Code Tunnel",
+                    "Open GitHub Codespaces",
+                    "GitHub Copilot extension"
+                )
+            ) { _, which ->
+                when (which) {
+                    0 -> promptOpenRepository()
+                    1 -> promptOpenTunnel()
+                    2 -> openCodespaces()
+                    3 -> openCopilotExtension()
+                }
+            }
+            .setNegativeButton("Cancel", null)
+            .show()
+    }
+
+    private fun promptOpenRepository() {
+        val input = EditText(this).apply {
+            hint = "owner/repository"
+            singleLine = true
+            inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_URI
+            setTextColor(Color.WHITE)
+        }
+        val container = LinearLayout(this).apply {
+            setPadding(dp(20), dp(8), dp(20), 0)
+            addView(input)
+        }
+
+        AlertDialog.Builder(this)
+            .setTitle("Open GitHub repository")
+            .setMessage("Enter a repository as owner/name.")
+            .setView(container)
+            .setPositiveButton("Open") { _, _ ->
+                val repository = input.text.toString().trim()
+                if (!Regex("^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$").matches(repository)) {
+                    Toast.makeText(this, "Use the format owner/repository.", Toast.LENGTH_LONG).show()
+                } else {
+                    editor.loadUrl("https://vscode.dev/github/$repository")
+                }
+            }
+            .setNegativeButton("Cancel", null)
+            .show()
+    }
+
+    private fun promptOpenTunnel() {
+        val input = EditText(this).apply {
+            hint = "https://vscode.dev/tunnel/machine/folder"
+            singleLine = true
+            inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_URI
+            setTextColor(Color.WHITE)
+        }
+        val container = LinearLayout(this).apply {
+            setPadding(dp(20), dp(8), dp(20), 0)
+            addView(input)
+        }
+
+        AlertDialog.Builder(this)
+            .setTitle("Connect to Remote Tunnel")
+            .setMessage("Paste the vscode.dev/tunnel URL shown by the remote machine.")
+            .setView(container)
+            .setPositiveButton("Connect") { _, _ ->
+                val url = input.text.toString().trim()
+                val uri = runCatching { Uri.parse(url) }.getOrNull()
+                val valid = uri?.scheme == "https" &&
+                    uri.host == "vscode.dev" &&
+                    uri.pathSegments.size >= 3 &&
+                    uri.pathSegments.firstOrNull() == "tunnel"
+                if (valid) {
+                    editor.loadUrl(uri.toString())
+                } else {
+                    Toast.makeText(
+                        this,
+                        "Paste a valid https://vscode.dev/tunnel/... URL.",
+                        Toast.LENGTH_LONG
+                    ).show()
+                }
+            }
+            .setNegativeButton("Cancel", null)
+            .show()
+    }
+
+    private fun openCodespaces() {
+        editor.loadUrl(CODESPACES_URL)
+        Toast.makeText(
+            this,
+            "Open a Codespace in the browser editor. Its remote environment provides the integrated terminal.",
+            Toast.LENGTH_LONG
+        ).show()
+    }
+
+    private fun openCopilotExtension() {
+        editor.loadUrl(COPILOT_EXTENSION_URL)
+    }
+
+    private fun makeHeaderButton(label: String, onClick: () -> Unit): Button {
         val button = makeKeyButton(label)
         button.setOnClickListener { onClick() }
         rowContent(row).addView(button)
@@ -562,6 +764,9 @@ class MainActivity : Activity() {
                     Intent(Intent.ACTION_OPEN_DOCUMENT_TREE),
                     REQUEST_BRIDGE_FOLDER
                 )
+            }
+            "modifierState" -> {
+                applyModifierState(args)
             }
             "pickFile" -> {
                 val intent = Intent(Intent.ACTION_OPEN_DOCUMENT).apply {
