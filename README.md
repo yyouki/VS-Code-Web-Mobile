@@ -7,8 +7,9 @@ An independent Android wrapper for the official Visual Studio Code web editor at
 - Android WebView that opens VS Code for the Web.
 - Immersive layout: the status bar is hidden, the navigation bar remains available, and a swipe from the top temporarily reveals system bars.
 - Display-cutout/notch support with safe insets for app controls.
-- Dedicated control for the Android keyboard, WebView zoom in/out/reset, and mobile/desktop user-agent modes.
-- One horizontally scrollable, hideable key strip containing CTRL, ALT, SHIFT, META, ESC, TAB, function keys, navigation keys, and programming symbols.
+- Dedicated **⌨** control to request the Android keyboard, WebView zoom in/out/reset, and mobile/desktop user-agent modes.
+- One horizontally scrollable, hideable key strip containing the keyboard control, CTRL, ALT, SHIFT, META, ESC, TAB, function keys, navigation keys, and programming symbols.
+- Editor scrolling gestures dismiss the on-screen keyboard without intentionally clearing editor focus; a normal tap on a text input is left to VS Code/WebView to request the keyboard.
 - Modifier indicators mirror key states observed by the editor from the Android/physical keyboard.
 - Remote menu shortcuts for GitHub repositories, VS Code Remote Tunnels, GitHub Codespaces, and the GitHub Copilot Marketplace page.
 - Android WebView supports GitHub sign-in popup windows and shared WebView cookies; OAuth compatibility still depends on the provider and Android WebView.
@@ -44,6 +45,7 @@ Release APK output: app/build/outputs/apk/release/app-release.apk
 ## GitHub Actions
 
 - The Android APK workflow builds a debug APK on pushes to main and pull requests.
+- The app shows a narrow page-load progress line, preserves WebView state across Activity recreation, and uses a compact header to reduce clipping on narrow screens.
 - The Release APK workflow publishes a GitHub Release when a v-prefixed tag is pushed, or when the workflow is run manually.
 - Release asset name: CodeWebCompanion-vX.Y.Z.apk
 
@@ -101,7 +103,8 @@ Open **Remote → GitHub Copilot extension** to view the Marketplace listing, or
 ## Navigation and display controls
 
 - **Back** navigates WebView history and returns to `vscode.dev` when leaving another page; it does not finish the app.
-- **⌨** focuses Monaco's input area and asks Android to show the on-screen keyboard.
+- **⌨** focuses Monaco's input area and explicitly requests the Android on-screen keyboard.
+- Scrolling/dragging in the editor dismisses the IME after the gesture; a normal tap on a text input is handled by the editor.
 - **− / + / 100%** control programmatic WebView zoom; built-in pinch zoom is disabled.
 - **Desktop** changes the WebView user-agent and reloads the current page. A desktop user-agent cannot add desktop-only runtime capabilities to the browser.
 
