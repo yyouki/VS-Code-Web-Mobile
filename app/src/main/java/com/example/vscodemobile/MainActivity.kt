@@ -9,6 +9,11 @@ import android.os.Build
 import android.os.Bundle
 import android.os.Message
 import android.os.SystemClock
+import android.text.InputType
+import android.view.View
+import android.view.MotionEvent
+import android.view.ViewConfiguration
+import android.view.inputmethod.InputMethodManager
 import android.window.OnBackInvokedCallback
 import android.window.OnBackInvokedDispatcher
 import android.provider.DocumentsContract
@@ -25,11 +30,12 @@ import androidx.webkit.WebMessageCompat
 import android.webkit.WebResourceRequest
 import android.webkit.WebView
 import android.webkit.WebViewClient
-import android.view.inputmethod.InputMethodManager
 import android.widget.Button
+import android.widget.EditText
 import android.widget.HorizontalScrollView
 import android.widget.ImageView
 import android.widget.LinearLayout
+import android.widget.ProgressBar
 import android.widget.TextView
 import android.widget.Toast
 import androidx.core.view.ViewCompat
@@ -46,8 +52,14 @@ import java.util.concurrent.Executors
 
 class MainActivity : Activity() {
     private lateinit var editor: WebView
+    private lateinit var keyboardBar: HorizontalScrollView
+    private lateinit var loadingProgressBar: ProgressBar
     private val modifierButtons = mutableMapOf<Int, Button>()
     private var activeModifiers = 0
+    private var editorTouchStartX = 0f
+    private var editorTouchStartY = 0f
+    private var editorGestureMoved = false
+    private var editorTouchSlop = 8f
     private val ioExecutor = Executors.newSingleThreadExecutor()
 
     private data class PendingPicker(
@@ -63,6 +75,7 @@ class MainActivity : Activity() {
     private var originalUserAgent: String? = null
     private var desktopMode = false
     private var pageZoom = 1.0f
+    private var keyBarVisible = true
     private var zoomLabelButton: Button? = null
     private var desktopModeButton: Button? = null
     private var backInvokedCallback: OnBackInvokedCallback? = null
@@ -88,8 +101,11 @@ class MainActivity : Activity() {
         selectedTreeUri = preferences.getString(KEY_TREE_URI, null)
             ?.let { runCatching { Uri.parse(it) }.getOrNull() }
         desktopMode = preferences.getBoolean(KEY_DESKTOP_MODE, false)
+        pageZoom = preferences.getFloat(KEY_PAGE_ZOOM, 1.0f).coerceIn(MIN_PAGE_ZOOM, MAX_PAGE_ZOOM)
+        keyBarVisible = preferences.getBoolean(KEY_KEYBAR_VISIBLE, true)
 
         window.setSoftInputMode(WindowManager.LayoutParams.SOFT_INPUT_ADJUST_RESIZE)
+        editorTouchSlop = ViewConfiguration.get(this).scaledTouchSlop.toFloat()
         window.statusBarColor = Color.rgb(30, 30, 30)
         window.navigationBarColor = Color.rgb(30, 30, 30)
 
@@ -103,11 +119,12 @@ class MainActivity : Activity() {
                     WindowInsetsCompat.Type.displayCutout() or
                         WindowInsetsCompat.Type.navigationBars()
                 )
+                val imeInsets = insets.getInsets(WindowInsetsCompat.Type.ime())
                 view.setPadding(
                     safeInsets.left,
                     safeInsets.top,
                     safeInsets.right,
-                    safeInsets.bottom
+                    maxOf(safeInsets.bottom, imeInsets.bottom)
                 )
                 insets
             }
@@ -129,22 +146,41 @@ class MainActivity : Activity() {
 
         header.addView(
             TextView(this).apply {
-                text = getString(R.string.app_name)
-                textSize = 13f
+                text = "Code Web"
+                textSize = 12f
+                isSingleLine = true
                 setTextColor(Color.WHITE)
                 setPadding(dp(8), 0, 0, 0)
                 layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
             }
         )
 
-        header.addView(makeHeaderButton("Open Folder") { openFolderFromToolbar() })
-        header.addView(makeHeaderButton("About") { showAboutDialog() })
+        header.addView(makeHeaderButton("Folder") { openFolderFromToolbar() })
+        header.addView(makeHeaderButton("Remote") { showRemoteDialog() })
+        header.addView(makeHeaderButton("Keys") { toggleKeyboardBar() })
+        header.addView(makeHeaderButton("Info") { showAboutDialog() })
         root.addView(
             header,
             LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(44))
         )
 
+        loadingProgressBar = ProgressBar(
+            this,
+            null,
+            android.R.attr.progressBarStyleHorizontal
+        ).apply {
+            max = 100
+            progress = 0
+            isIndeterminate = false
+            visibility = View.GONE
+        }
+        root.addView(
+            loadingProgressBar,
+            LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(2))
+        )
+
         editor = WebView(this).apply {
+            setLayerType(View.LAYER_TYPE_HARDWARE, null)
             setBackgroundColor(Color.rgb(30, 30, 30))
             isFocusable = true
             isFocusableInTouchMode = true
@@ -156,11 +192,13 @@ class MainActivity : Activity() {
             settings.allowContentAccess = false
             settings.javaScriptCanOpenWindowsAutomatically = true
             settings.setSupportMultipleWindows(true)
-            settings.setSupportZoom(false) // Zoom is controlled by dedicated toolbar buttons.
+            settings.setSupportZoom(true) // Programmatic zoom works; built-in pinch controls stay disabled.
             settings.builtInZoomControls = false
             settings.displayZoomControls = false
             settings.useWideViewPort = true
             settings.loadWithOverviewMode = desktopMode
+            settings.cacheMode = android.webkit.WebSettings.LOAD_DEFAULT
+            settings.textZoom = 100
             originalUserAgent = settings.userAgentString
             if (desktopMode) {
                 settings.userAgentString = asDesktopUserAgent(originalUserAgent.orEmpty())
@@ -171,10 +209,49 @@ class MainActivity : Activity() {
                 settings.safeBrowsingEnabled = true
             }
 
+            setOnTouchListener { view, event ->
+                when (event.actionMasked) {
+                    MotionEvent.ACTION_DOWN -> {
+                        editorTouchStartX = event.x
+                        editorTouchStartY = event.y
+                        editorGestureMoved = false
+                    }
+                    MotionEvent.ACTION_MOVE -> {
+                        val deltaX = kotlin.math.abs(event.x - editorTouchStartX)
+                        val deltaY = kotlin.math.abs(event.y - editorTouchStartY)
+                        if (deltaX > editorTouchSlop || deltaY > editorTouchSlop) {
+                            editorGestureMoved = true
+                        }
+                    }
+                    MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
+                        if (editorGestureMoved) {
+                            // A swipe/scroll should dismiss the IME without blurring Monaco's editor.
+                            view.postDelayed({ hideKeyboardAfterEditorScroll() }, 90)
+                        }
+                        editorGestureMoved = false
+                    }
+                }
+                false // Preserve WebView taps, text selection, and scrolling behavior.
+            }
+
             webViewClient = object : WebViewClient() {
+                override fun onPageStarted(
+                    view: WebView,
+                    url: String,
+                    favicon: android.graphics.Bitmap?
+                ) {
+                    super.onPageStarted(view, url, favicon)
+                    loadingProgressBar.progress = 5
+                    loadingProgressBar.visibility = View.VISIBLE
+                }
+
                 override fun onPageFinished(view: WebView, url: String) {
+                    loadingProgressBar.progress = 100
+                    loadingProgressBar.visibility = View.GONE
                     super.onPageFinished(view, url)
                     val loadedUri = Uri.parse(url)
+                    CookieManager.getInstance().flush()
+                    applySavedPageZoom(view)
                     if (loadedUri.scheme == "https" && loadedUri.host == "vscode.dev") {
                         restoreRememberedDirectory(view)
                     }
@@ -183,13 +260,16 @@ class MainActivity : Activity() {
                 override fun shouldOverrideUrlLoading(
                     view: WebView,
                     request: WebResourceRequest
-                ): Boolean {
-                    // HTTPS sign-in pages may be required; native file access remains origin-restricted.
-                    return request.url.scheme != "https"
-                }
+                ): Boolean = handleExternalUrl(request.url)
             }
 
             webChromeClient = object : WebChromeClient() {
+                override fun onProgressChanged(view: WebView, newProgress: Int) {
+                    loadingProgressBar.progress = newProgress
+                    loadingProgressBar.visibility =
+                        if (newProgress >= 100) View.GONE else View.VISIBLE
+                }
+
                 override fun onCreateWindow(
                     view: WebView,
                     isDialog: Boolean,
@@ -251,59 +331,52 @@ class MainActivity : Activity() {
             )
         )
 
-        val keyboardBar = LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL
+        // All mobile keys live in one horizontally scrollable strip.
+        keyboardBar = createKeyRow().apply {
             setBackgroundColor(Color.rgb(37, 37, 38))
-            setPadding(dp(3), dp(3), dp(3), dp(3))
+            setPadding(dp(3), dp(2), dp(3), dp(2))
+            visibility = if (keyBarVisible) View.VISIBLE else View.GONE
         }
 
-        val controlRow = createKeyRow()
-        addControlButton(controlRow, "⌨") { showInternalKeyboard() }
-        addControlButton(controlRow, "−") { changePageZoom(-ZOOM_STEP) }
-        zoomLabelButton = makeKeyButton("100%").apply {
+        addControlButton(keyboardBar, "⌨") { showInternalKeyboard() }
+        addControlButton(keyboardBar, "−") { changePageZoom(-ZOOM_STEP) }
+        zoomLabelButton = makeKeyButton("${(pageZoom * 100).toInt()}%").apply {
             setOnClickListener { resetPageZoom() }
         }
-        rowContent(controlRow).addView(zoomLabelButton)
-        addControlButton(controlRow, "+") { changePageZoom(ZOOM_STEP) }
+        rowContent(keyboardBar).addView(zoomLabelButton)
+        addControlButton(keyboardBar, "+") { changePageZoom(ZOOM_STEP) }
         desktopModeButton = makeKeyButton(if (desktopMode) "Desktop ✓" else "Desktop").apply {
             setOnClickListener { toggleDesktopMode() }
         }
-        rowContent(controlRow).addView(desktopModeButton)
-        addControlButton(controlRow, "Sync") { showSyncHelp() }
-        addControlButton(controlRow, "Codespaces") { openCodespaces() }
+        rowContent(keyboardBar).addView(desktopModeButton)
 
-        val firstRow = createKeyRow()
-        addModifierButton(firstRow, "CTRL", KeyEvent.META_CTRL_ON)
-        addModifierButton(firstRow, "ALT", KeyEvent.META_ALT_ON)
-        addModifierButton(firstRow, "SHIFT", KeyEvent.META_SHIFT_ON)
-        addKeyButton(firstRow, "ESC", KeyEvent.KEYCODE_ESCAPE)
-        addKeyButton(firstRow, "TAB", KeyEvent.KEYCODE_TAB)
-        addKeyButton(firstRow, "F1", KeyEvent.KEYCODE_F1)
-        addKeyButton(firstRow, "F5", KeyEvent.KEYCODE_F5)
-        addKeyButton(firstRow, "P", KeyEvent.KEYCODE_P)
-        addKeyButton(firstRow, "C", KeyEvent.KEYCODE_C)
-        addKeyButton(firstRow, "V", KeyEvent.KEYCODE_V)
-        addKeyButton(firstRow, "X", KeyEvent.KEYCODE_X)
-
-        val secondRow = createKeyRow()
+        addModifierButton(keyboardBar, "CTRL", KeyEvent.META_CTRL_ON)
+        addModifierButton(keyboardBar, "ALT", KeyEvent.META_ALT_ON)
+        addModifierButton(keyboardBar, "SHIFT", KeyEvent.META_SHIFT_ON)
+        addModifierButton(keyboardBar, "META", KeyEvent.META_META_ON)
+        addKeyButton(keyboardBar, "ESC", KeyEvent.KEYCODE_ESCAPE)
+        addKeyButton(keyboardBar, "TAB", KeyEvent.KEYCODE_TAB)
+        addKeyButton(keyboardBar, "F1", KeyEvent.KEYCODE_F1)
+        addKeyButton(keyboardBar, "F5", KeyEvent.KEYCODE_F5)
+        addKeyButton(keyboardBar, "P", KeyEvent.KEYCODE_P)
+        addKeyButton(keyboardBar, "C", KeyEvent.KEYCODE_C)
+        addKeyButton(keyboardBar, "V", KeyEvent.KEYCODE_V)
+        addKeyButton(keyboardBar, "X", KeyEvent.KEYCODE_X)
         listOf("{", "}", "[", "]", "(", ")", ";", ":", "/", "\\", "|", "~", "_")
-            .forEach { addSymbolButton(secondRow, it) }
-        addKeyButton(secondRow, "←", KeyEvent.KEYCODE_DPAD_LEFT)
-        addKeyButton(secondRow, "↓", KeyEvent.KEYCODE_DPAD_DOWN)
-        addKeyButton(secondRow, "↑", KeyEvent.KEYCODE_DPAD_UP)
-        addKeyButton(secondRow, "→", KeyEvent.KEYCODE_DPAD_RIGHT)
-        addKeyButton(secondRow, "HOME", KeyEvent.KEYCODE_MOVE_HOME)
-        addKeyButton(secondRow, "END", KeyEvent.KEYCODE_MOVE_END)
-        addKeyButton(secondRow, "DEL", KeyEvent.KEYCODE_DEL)
+            .forEach { addSymbolButton(keyboardBar, it) }
+        addKeyButton(keyboardBar, "←", KeyEvent.KEYCODE_DPAD_LEFT)
+        addKeyButton(keyboardBar, "↓", KeyEvent.KEYCODE_DPAD_DOWN)
+        addKeyButton(keyboardBar, "↑", KeyEvent.KEYCODE_DPAD_UP)
+        addKeyButton(keyboardBar, "→", KeyEvent.KEYCODE_DPAD_RIGHT)
+        addKeyButton(keyboardBar, "HOME", KeyEvent.KEYCODE_MOVE_HOME)
+        addKeyButton(keyboardBar, "END", KeyEvent.KEYCODE_MOVE_END)
+        addKeyButton(keyboardBar, "DEL", KeyEvent.KEYCODE_DEL)
 
-        keyboardBar.addView(controlRow)
-        keyboardBar.addView(firstRow)
-        keyboardBar.addView(secondRow)
         root.addView(
             keyboardBar,
             LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT,
-                ViewGroup.LayoutParams.WRAP_CONTENT
+                dp(48)
             )
         )
 
@@ -311,7 +384,10 @@ class MainActivity : Activity() {
         ViewCompat.requestApplyInsets(root)
         enableImmersiveStatusBar()
         installAndroidFileSystemBridge()
-        editor.loadUrl(VSCODE_WEB_URL)
+        val restoredWebView = savedInstanceState?.let { editor.restoreState(it) } != null
+        if (!restoredWebView) {
+            editor.loadUrl(VSCODE_WEB_URL)
+        }
     }
 
     private fun showAuthenticationPopup(resultMsg: Message): Boolean {
@@ -321,7 +397,12 @@ class MainActivity : Activity() {
             settings.javaScriptEnabled = true
             settings.domStorageEnabled = true
             settings.javaScriptCanOpenWindowsAutomatically = true
+            // Keep OAuth popups in this same authentication window instead of spawning unhandled nested windows.
             settings.setSupportMultipleWindows(false)
+            settings.setSupportZoom(true)
+            settings.builtInZoomControls = false
+            settings.displayZoomControls = false
+            settings.userAgentString = editor.settings.userAgentString
             settings.mixedContentMode = android.webkit.WebSettings.MIXED_CONTENT_NEVER_ALLOW
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
                 settings.safeBrowsingEnabled = true
@@ -329,10 +410,26 @@ class MainActivity : Activity() {
             CookieManager.getInstance().setAcceptThirdPartyCookies(this, true)
 
             webViewClient = object : WebViewClient() {
+                override fun onPageFinished(view: WebView, url: String) {
+                    super.onPageFinished(view, url)
+                    CookieManager.getInstance().flush()
+                }
+
                 override fun shouldOverrideUrlLoading(
                     view: WebView,
                     request: WebResourceRequest
-                ): Boolean = request.url.scheme != "https"
+                ): Boolean {
+                    val host = request.url.host.orEmpty()
+                    if (host.endsWith(".github.dev") ||
+                        (host == "vscode.dev" && request.url.path?.startsWith("/tunnel/") == true)
+                    ) {
+                        // Route a Codespace or tunnel editor opened in a popup into the main view.
+                        editor.loadUrl(request.url.toString())
+                        closeAuthenticationPopup()
+                        return true
+                    }
+                    return handleExternalUrl(request.url)
+                }
             }
             webChromeClient = object : WebChromeClient() {
                 override fun onCloseWindow(window: WebView) {
@@ -391,62 +488,110 @@ class MainActivity : Activity() {
         authPopupDialog?.dismiss()
     }
 
-    private fun addControlButton(
-        row: HorizontalScrollView,
-        label: String,
-        onClick: () -> Unit
-    ) {
-        val button = makeKeyButton(label)
-        button.setOnClickListener { onClick() }
-        rowContent(row).addView(button)
+    private fun handleExternalUrl(uri: Uri): Boolean {
+        if (uri.scheme == "https") return false
+
+        return when (uri.scheme?.lowercase()) {
+            "mailto", "tel", "sms", "geo", "intent", "vscode" -> {
+                try {
+                    val intent = if (uri.scheme == "intent") {
+                        Intent.parseUri(uri.toString(), Intent.URI_INTENT_SCHEME)
+                    } else {
+                        Intent(Intent.ACTION_VIEW, uri)
+                    }
+                    startActivity(intent)
+                } catch (_: Exception) {
+                    Toast.makeText(
+                        this,
+                        "This link needs a compatible Android app or browser.",
+                        Toast.LENGTH_LONG
+                    ).show()
+                }
+                true
+            }
+            else -> true
+        }
     }
 
-    private fun showInternalKeyboard() {
-        editor.requestFocusFromTouch()
-        val focusScript = """
-            (function () {
-              const input = document.querySelector(
-                ".monaco-editor textarea.inputarea, .monaco-editor textarea"
-              );
-              if (input) input.focus();
-              else if (document.activeElement) document.activeElement.focus();
-            })();
-        """.trimIndent()
+    private fun toggleKeyboardBar() {
+        keyBarVisible = !keyBarVisible
+        keyboardBar.visibility = if (keyBarVisible) View.VISIBLE else View.GONE
+        getSharedPreferences(PREFERENCES, MODE_PRIVATE)
+            .edit()
+            .putBoolean(KEY_KEYBAR_VISIBLE, keyBarVisible)
+            .apply()
+    }
 
-        editor.evaluateJavascript(focusScript) {
-            editor.postDelayed({
-                val inputMethodManager =
-                    getSystemService(INPUT_METHOD_SERVICE) as InputMethodManager
-                inputMethodManager.showSoftInput(
-                    editor,
-                    InputMethodManager.SHOW_IMPLICIT
-                )
-            }, 120)
+    private fun syncModifierButtons() {
+        modifierButtons.forEach { (flag, button) ->
+            val label = when (flag) {
+                KeyEvent.META_CTRL_ON -> "CTRL"
+                KeyEvent.META_ALT_ON -> "ALT"
+                KeyEvent.META_SHIFT_ON -> "SHIFT"
+                KeyEvent.META_META_ON -> "META"
+                else -> button.text.toString().substringBefore(" ✓")
+            }
+            button.text = if ((activeModifiers and flag) != 0) "$label ✓" else label
         }
+    }
+
+    private fun applyModifierState(args: JSONObject) {
+        activeModifiers = 0
+        if (args.optBoolean("ctrl")) activeModifiers = activeModifiers or KeyEvent.META_CTRL_ON
+        if (args.optBoolean("alt")) activeModifiers = activeModifiers or KeyEvent.META_ALT_ON
+        if (args.optBoolean("shift")) activeModifiers = activeModifiers or KeyEvent.META_SHIFT_ON
+        if (args.optBoolean("meta")) activeModifiers = activeModifiers or KeyEvent.META_META_ON
+        runOnUiThread { syncModifierButtons() }
     }
 
     private fun changePageZoom(delta: Float) {
         val nextZoom = (pageZoom + delta).coerceIn(MIN_PAGE_ZOOM, MAX_PAGE_ZOOM)
         if (nextZoom == pageZoom) return
 
-        editor.zoomBy(nextZoom / pageZoom)
+        val ratio = nextZoom / pageZoom
         pageZoom = nextZoom
+        if (::editor.isInitialized && editor.url != null) {
+            runCatching { editor.zoomBy(ratio) }
+        }
+        getSharedPreferences(PREFERENCES, MODE_PRIVATE)
+            .edit()
+            .putFloat(KEY_PAGE_ZOOM, pageZoom)
+            .apply()
         zoomLabelButton?.text = "${(pageZoom * 100).toInt()}%"
     }
 
     private fun resetPageZoom() {
-        if (pageZoom != 1.0f) {
-            editor.zoomBy(1.0f / pageZoom)
-            pageZoom = 1.0f
+        val ratio = 1.0f / pageZoom
+        if (::editor.isInitialized && editor.url != null && pageZoom != 1.0f) {
+            runCatching { editor.zoomBy(ratio) }
         }
+        pageZoom = 1.0f
+        getSharedPreferences(PREFERENCES, MODE_PRIVATE)
+            .edit()
+            .putFloat(KEY_PAGE_ZOOM, pageZoom)
+            .apply()
         zoomLabelButton?.text = "100%"
     }
 
+    private fun applySavedPageZoom(view: WebView) {
+        if (pageZoom != 1.0f) {
+            view.post {
+                if (!isFinishing && !isDestroyed) {
+                    runCatching { view.zoomBy(pageZoom) }
+                }
+            }
+        }
+        zoomLabelButton?.text = "${(pageZoom * 100).toInt()}%"
+    }
+
     private fun asDesktopUserAgent(userAgent: String): String {
-        return userAgent
-            .replace(Regex("\\s\\(Linux; Android [^)]*\\)"), " (X11; Linux x86_64)")
-            .replace(" Mobile", "")
-            .replace("; wv", "")
+        val chromeVersion = Regex("Chrome/([0-9.]+)")
+            .find(userAgent)
+            ?.groupValues
+            ?.getOrNull(1)
+            ?: "131.0.0.0"
+        return "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 " +
+            "(KHTML, like Gecko) Chrome/$chromeVersion Safari/537.36"
     }
 
     private fun toggleDesktopMode() {
@@ -467,32 +612,213 @@ class MainActivity : Activity() {
             ?.takeIf { Uri.parse(it).scheme == "https" }
             ?: VSCODE_WEB_URL
         editor.loadUrl(currentUrl)
-        Toast.makeText(
-            this,
-            if (desktopMode) "Desktop site enabled. Reloading the editor." else "Mobile site enabled.",
-            Toast.LENGTH_SHORT
-        ).show()
+    }
+
+    private fun showRemoteDialog() {
+        AlertDialog.Builder(this)
+            .setTitle("Open remote workspace")
+            .setItems(
+                arrayOf(
+                    "Open GitHub repository",
+                    "Connect to VS Code Tunnel",
+                    "Open Codespaces dashboard",
+                    "Create / resume Codespace for a repository",
+                    "Open existing Codespace by name",
+                    "GitHub Copilot extension"
+                )
+            ) { _, which ->
+                when (which) {
+                    0 -> promptOpenRepository()
+                    1 -> promptOpenTunnel()
+                    2 -> openCodespaces()
+                    3 -> promptCreateCodespace()
+                    4 -> promptOpenCodespaceByName()
+                    5 -> openCopilotExtension()
+                }
+            }
+            .setNegativeButton("Cancel", null)
+            .show()
+    }
+
+    private fun promptOpenRepository() {
+        val input = EditText(this).apply {
+            hint = "owner/repository"
+            setSingleLine(true)
+            inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_URI
+            setTextColor(Color.WHITE)
+        }
+        val container = LinearLayout(this).apply {
+            setPadding(dp(20), dp(8), dp(20), 0)
+            addView(input)
+        }
+
+        AlertDialog.Builder(this)
+            .setTitle("Open GitHub repository")
+            .setMessage("Enter a repository as owner/name.")
+            .setView(container)
+            .setPositiveButton("Open") { _, _ ->
+                val repository = input.text.toString().trim()
+                if (!Regex("^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$").matches(repository)) {
+                    Toast.makeText(this, "Use the format owner/repository.", Toast.LENGTH_LONG).show()
+                } else {
+                    editor.loadUrl("https://vscode.dev/github/$repository")
+                }
+            }
+            .setNegativeButton("Cancel", null)
+            .show()
+    }
+
+    private fun promptOpenTunnel() {
+        val input = EditText(this).apply {
+            hint = "https://vscode.dev/tunnel/machine/folder"
+            setSingleLine(true)
+            inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_URI
+            setTextColor(Color.WHITE)
+        }
+        val container = LinearLayout(this).apply {
+            setPadding(dp(20), dp(8), dp(20), 0)
+            addView(input)
+        }
+
+        AlertDialog.Builder(this)
+            .setTitle("Connect to Remote Tunnel")
+            .setMessage("Paste the vscode.dev/tunnel URL shown by the remote machine.")
+            .setView(container)
+            .setPositiveButton("Connect") { _, _ ->
+                val url = input.text.toString().trim()
+                val uri = runCatching { Uri.parse(url) }.getOrNull()
+                val valid = uri?.scheme == "https" &&
+                    uri.host == "vscode.dev" &&
+                    uri.pathSegments.size >= 3 &&
+                    uri.pathSegments.firstOrNull() == "tunnel"
+                if (valid) {
+                    editor.loadUrl(uri.toString())
+                } else {
+                    Toast.makeText(
+                        this,
+                        "Paste a valid https://vscode.dev/tunnel/... URL.",
+                        Toast.LENGTH_LONG
+                    ).show()
+                }
+            }
+            .setNegativeButton("Cancel", null)
+            .show()
     }
 
     private fun openCodespaces() {
         editor.loadUrl(CODESPACES_URL)
+    }
+
+    private fun promptCreateCodespace() {
+        val input = EditText(this).apply {
+            hint = "owner/repository"
+            setSingleLine(true)
+            inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_URI
+            setTextColor(Color.WHITE)
+        }
+        val container = LinearLayout(this).apply {
+            setPadding(dp(20), dp(8), dp(20), 0)
+            addView(input)
+        }
+
+        AlertDialog.Builder(this)
+            .setTitle("Create or resume Codespace")
+            .setMessage("Enter a GitHub repository. GitHub will resume a matching Codespace or offer to create one.")
+            .setView(container)
+            .setPositiveButton("Continue") { _, _ ->
+                val repository = input.text.toString().trim()
+                if (!Regex("^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$").matches(repository)) {
+                    Toast.makeText(this, "Use the format owner/repository.", Toast.LENGTH_LONG).show()
+                } else {
+                    editor.loadUrl("https://codespaces.new/$repository?quickstart=1")
+                }
+            }
+            .setNegativeButton("Cancel", null)
+            .show()
+    }
+
+    private fun promptOpenCodespaceByName() {
+        val input = EditText(this).apply {
+            hint = "permanent-codespace-name"
+            setSingleLine(true)
+            inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_URI
+            setTextColor(Color.WHITE)
+        }
+        val container = LinearLayout(this).apply {
+            setPadding(dp(20), dp(8), dp(20), 0)
+            addView(input)
+        }
+
+        AlertDialog.Builder(this)
+            .setTitle("Open existing Codespace")
+            .setMessage("Enter the permanent Codespace name from GitHub. This opens its VS Code web client and remote terminal.")
+            .setView(container)
+            .setPositiveButton("Open") { _, _ ->
+                val name = input.text.toString().trim().lowercase()
+                if (!Regex("^[a-z0-9][a-z0-9-]*$").matches(name)) {
+                    Toast.makeText(this, "Enter the permanent Codespace name.", Toast.LENGTH_LONG).show()
+                } else {
+                    editor.loadUrl("https://$name.github.dev")
+                }
+            }
+            .setNegativeButton("Cancel", null)
+            .show()
+    }
+
+    private fun openCopilotExtension() {
+        // Open VS Code's own Extensions view instead of leaving the editor for the Marketplace website.
+        sendKey(
+            KeyEvent.KEYCODE_X,
+            KeyEvent.META_CTRL_ON or KeyEvent.META_SHIFT_ON
+        )
         Toast.makeText(
             this,
-            "Sign in to GitHub, then create or open a Codespace. Its remote environment provides the terminal.",
+            "Extensions opened. Search for GitHub Copilot and install it here.",
             Toast.LENGTH_LONG
         ).show()
     }
 
-    private fun showSyncHelp() {
-        AlertDialog.Builder(this)
-            .setTitle("Backup & Sync")
-            .setMessage(
-                "In VS Code, open the Manage gear menu or Accounts menu, choose " +
-                    "Backup and Sync Settings, select what to sync, then sign in with GitHub. " +
-                    "Authentication popups are enabled in this app."
-            )
-            .setPositiveButton("Got it", null)
-            .show()
+    private fun addControlButton(
+        row: HorizontalScrollView,
+        label: String,
+        onClick: () -> Unit
+    ) {
+        val button = makeKeyButton(label)
+        button.setOnClickListener { onClick() }
+        rowContent(row).addView(button)
+    }
+
+    private fun showInternalKeyboard() {
+        editor.requestFocusFromTouch()
+        val focusScript = """
+            (function () {
+              const input = document.querySelector(
+                ".monaco-editor textarea.inputarea, .monaco-editor textarea"
+              );
+              if (input) input.focus();
+            })();
+        """.trimIndent()
+
+        editor.evaluateJavascript(focusScript) {
+            editor.postDelayed({
+                val inputMethodManager =
+                    getSystemService(INPUT_METHOD_SERVICE) as InputMethodManager
+                WindowCompat.getInsetsController(window, window.decorView)
+                    .show(WindowInsetsCompat.Type.ime())
+                inputMethodManager.showSoftInput(
+                    editor,
+                    InputMethodManager.SHOW_IMPLICIT
+                )
+            }, 120)
+        }
+    }
+
+    private fun hideKeyboardAfterEditorScroll() {
+        WindowCompat.getInsetsController(window, window.decorView)
+            .hide(WindowInsetsCompat.Type.ime())
+        val inputMethodManager =
+            getSystemService(INPUT_METHOD_SERVICE) as InputMethodManager
+        inputMethodManager.hideSoftInputFromWindow(editor.windowToken, 0)
     }
 
     private fun makeHeaderButton(label: String, onClick: () -> Unit): Button {
@@ -556,6 +882,9 @@ class MainActivity : Activity() {
                     Intent(Intent.ACTION_OPEN_DOCUMENT_TREE),
                     REQUEST_BRIDGE_FOLDER
                 )
+            }
+            "modifierState" -> {
+                applyModifierState(args)
             }
             "pickFile" -> {
                 val intent = Intent(Intent.ACTION_OPEN_DOCUMENT).apply {
@@ -919,7 +1248,16 @@ class MainActivity : Activity() {
             Intent.FLAG_GRANT_READ_URI_PERMISSION or
                 Intent.FLAG_GRANT_WRITE_URI_PERMISSION
             )
-        runCatching { contentResolver.takePersistableUriPermission(uri, grants) }
+        if (grants != 0) {
+            runCatching { contentResolver.takePersistableUriPermission(uri, grants) }
+                .onFailure {
+                    Toast.makeText(
+                        this,
+                        "Folder selected for this session, but Android could not persist its permission.",
+                        Toast.LENGTH_LONG
+                    ).show()
+                }
+        }
         selectedTreeUri = uri
         getSharedPreferences(PREFERENCES, MODE_PRIVATE)
             .edit()
@@ -929,14 +1267,26 @@ class MainActivity : Activity() {
 
     private fun displayName(uri: Uri): String {
         var name = "Selected folder"
-        contentResolver.query(
-            uri,
-            arrayOf(DocumentsContract.Document.COLUMN_DISPLAY_NAME),
-            null,
-            null,
-            null
-        )?.use { cursor ->
-            if (cursor.moveToFirst()) name = cursor.getString(0) ?: name
+        // ACTION_OPEN_DOCUMENT_TREE returns a tree URI; query its root document URI instead.
+        val queryUri = runCatching {
+            if (DocumentsContract.isTreeUri(uri)) {
+                val rootDocumentId = DocumentsContract.getTreeDocumentId(uri)
+                DocumentsContract.buildDocumentUriUsingTree(uri, rootDocumentId)
+            } else {
+                uri
+            }
+        }.getOrDefault(uri)
+
+        runCatching {
+            contentResolver.query(
+                queryUri,
+                arrayOf(DocumentsContract.Document.COLUMN_DISPLAY_NAME),
+                null,
+                null,
+                null
+            )?.use { cursor ->
+                if (cursor.moveToFirst()) name = cursor.getString(0) ?: name
+            }
         }
         return name
     }
@@ -945,8 +1295,9 @@ class MainActivity : Activity() {
     override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
         super.onActivityResult(requestCode, resultCode, data)
 
-        when (requestCode) {
-            REQUEST_BRIDGE_FOLDER, REQUEST_TOOLBAR_FOLDER -> {
+        try {
+            when (requestCode) {
+                REQUEST_BRIDGE_FOLDER, REQUEST_TOOLBAR_FOLDER -> {
                 val selectedUri = if (resultCode == RESULT_OK) data?.data else null
 
                 if (selectedUri == null) {
@@ -1034,7 +1385,27 @@ class MainActivity : Activity() {
                 val uris = selectedUris(data)
                 uris.forEach { persistFilePermission(it, data.flags) }
                 callback.onReceiveValue(uris.toTypedArray())
+                }
             }
+        } catch (error: Exception) {
+            val pending = pendingBridgePicker
+            pendingBridgePicker = null
+            pending?.let {
+                postBridgeError(
+                    it.replyProxy,
+                    it.requestId,
+                    error.message ?: "Android could not open the selected item.",
+                    "NotAllowedError"
+                )
+            }
+
+            pendingFileChooser?.onReceiveValue(null)
+            pendingFileChooser = null
+            Toast.makeText(
+                this,
+                error.message ?: "Android could not access the selected item.",
+                Toast.LENGTH_LONG
+            ).show()
         }
     }
 
@@ -1111,6 +1482,9 @@ class MainActivity : Activity() {
 
         return HorizontalScrollView(this).apply {
             isHorizontalScrollBarEnabled = false
+            isFocusable = false
+            isFocusableInTouchMode = false
+            descendantFocusability = ViewGroup.FOCUS_AFTER_DESCENDANTS
             addView(
                 content,
                 ViewGroup.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, dp(46))
@@ -1130,7 +1504,7 @@ class MainActivity : Activity() {
         modifierButtons[flag] = button
         button.setOnClickListener {
             activeModifiers = activeModifiers xor flag
-            button.text = if ((activeModifiers and flag) != 0) "$label ✓" else label
+            syncModifierButtons()
             editor.requestFocus()
         }
         rowContent(row).addView(button)
@@ -1189,14 +1563,7 @@ class MainActivity : Activity() {
         editor.dispatchKeyEvent(up)
 
         activeModifiers = 0
-        modifierButtons.forEach { (flag, button) ->
-            button.text = when (flag) {
-                KeyEvent.META_CTRL_ON -> "CTRL"
-                KeyEvent.META_ALT_ON -> "ALT"
-                KeyEvent.META_SHIFT_ON -> "SHIFT"
-                else -> button.text
-            }
-        }
+        syncModifierButtons()
     }
 
     private fun symbolKey(symbol: String): Pair<Int, Int>? {
@@ -1233,7 +1600,19 @@ class MainActivity : Activity() {
 
     override fun onResume() {
         super.onResume()
+        if (::editor.isInitialized) editor.onResume()
         enableImmersiveStatusBar()
+    }
+
+    override fun onPause() {
+        if (::editor.isInitialized) editor.onPause()
+        CookieManager.getInstance().flush()
+        super.onPause()
+    }
+
+    override fun onSaveInstanceState(outState: Bundle) {
+        if (::editor.isInitialized) editor.saveState(outState)
+        super.onSaveInstanceState(outState)
     }
 
     override fun onWindowFocusChanged(hasFocus: Boolean) {
@@ -1306,6 +1685,8 @@ class MainActivity : Activity() {
         private const val PREFERENCES = "local_workspace"
         private const val KEY_TREE_URI = "selected_tree_uri"
         private const val KEY_DESKTOP_MODE = "desktop_mode"
+        private const val KEY_PAGE_ZOOM = "page_zoom"
+        private const val KEY_KEYBAR_VISIBLE = "keybar_visible"
         private const val ZOOM_STEP = 0.1f
         private const val MIN_PAGE_ZOOM = 0.6f
         private const val MAX_PAGE_ZOOM = 2.0f
