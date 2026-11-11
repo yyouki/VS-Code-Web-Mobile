@@ -328,7 +328,8 @@ class MainActivity : Activity() {
             settings.javaScriptEnabled = true
             settings.domStorageEnabled = true
             settings.javaScriptCanOpenWindowsAutomatically = true
-            settings.setSupportMultipleWindows(true)
+            // Keep OAuth popups in this same authentication window instead of spawning unhandled nested windows.
+            settings.setSupportMultipleWindows(false)
             settings.setSupportZoom(true)
             settings.builtInZoomControls = false
             settings.displayZoomControls = false
