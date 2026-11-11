@@ -4,7 +4,10 @@ import android.app.Activity
 import android.app.AlertDialog
 import android.content.Context
 import android.content.Intent
+import android.graphics.Canvas
 import android.graphics.Color
+import android.graphics.Paint
+import android.graphics.Path
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
@@ -13,6 +16,7 @@ import android.os.SystemClock
 import android.text.InputType
 import android.view.View
 import android.view.MotionEvent
+import android.view.PointerIcon
 import android.view.ViewConfiguration
 import android.view.inputmethod.EditorInfo
 import android.view.inputmethod.InputConnection
@@ -39,6 +43,7 @@ import android.webkit.WebView
 import android.webkit.WebViewClient
 import android.widget.Button
 import android.widget.EditText
+import android.widget.FrameLayout
 import android.widget.HorizontalScrollView
 import android.widget.ImageView
 import android.widget.LinearLayout
@@ -64,11 +69,27 @@ import java.util.concurrent.Executors
 private class ModifierAwareWebView(
     context: Context,
     private val modifierProvider: () -> Int,
-    private val onImeShortcut: (Int, Int) -> Unit
+    private val onImeShortcut: (Int, Int) -> Unit,
+    private val onModifierConsumed: () -> Unit
 ) : WebView(context) {
     override fun onCreateInputConnection(outAttrs: EditorInfo): InputConnection? {
         val target = super.onCreateInputConnection(outAttrs) ?: return null
         return object : InputConnectionWrapper(target, true) {
+            override fun sendKeyEvent(event: KeyEvent): Boolean {
+                val modifiers = modifierProvider()
+                if (modifiers == 0 || event.keyCode == KeyEvent.KEYCODE_UNKNOWN) {
+                    return super.sendKeyEvent(event)
+                }
+
+                // Some IMEs send key events rather than committing a text character.
+                val merged = KeyEvent.changeMetaState(event, event.metaState or modifiers)
+                val handled = super.sendKeyEvent(merged)
+                if (event.action == KeyEvent.ACTION_UP && event.isPrintingKey) {
+                    this@ModifierAwareWebView.post { onModifierConsumed() }
+                }
+                return handled
+            }
+
             override fun commitText(text: CharSequence?, newCursorPosition: Int): Boolean {
                 val modifiers = modifierProvider()
                 val committed = text?.toString().orEmpty()
@@ -94,7 +115,8 @@ private class ModifierAwareWebView(
         val shift = KeyEvent.META_SHIFT_ON
         if (character in 'a'..'z' || character in 'A'..'Z') {
             val code = KeyEvent.KEYCODE_A + (character.uppercaseChar() - 'A')
-            return code to if (character.isUpperCase()) shift else 0
+            // Gboard may auto-capitalize; do not turn Ctrl+A into Ctrl+Shift+A.
+            return code to 0
         }
         if (character in '0'..'9') {
             return (KeyEvent.KEYCODE_0 + (character - '0')) to 0
@@ -103,8 +125,150 @@ private class ModifierAwareWebView(
     }
 }
 
+/**
+ * Touch-controlled pointer: drag with one finger, release to click, and use two fingers to scroll.
+ */
+private class CursorOverlayView(
+    context: Context,
+    private val target: WebView
+) : View(context) {
+    private val fillPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        color = Color.WHITE
+        style = Paint.Style.FILL
+    }
+    private val outlinePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        color = Color.BLACK
+        style = Paint.Style.STROKE
+        strokeWidth = context.resources.displayMetrics.density * 2f
+    }
+    private val pointerPath = Path()
+    private var cursorX = 0f
+    private var cursorY = 0f
+    private var lastTouchX = 0f
+    private var lastTouchY = 0f
+    private var lastTwoFingerY = 0f
+    private var initialized = false
+
+    init {
+        isClickable = true
+        isFocusable = false
+        setBackgroundColor(Color.TRANSPARENT)
+    }
+
+    override fun onSizeChanged(width: Int, height: Int, oldWidth: Int, oldHeight: Int) {
+        super.onSizeChanged(width, height, oldWidth, oldHeight)
+        if (!initialized && width > 0 && height > 0) {
+            cursorX = width / 2f
+            cursorY = height / 2f
+            initialized = true
+            sendHover()
+        } else {
+            cursorX = cursorX.coerceIn(0f, width.toFloat())
+            cursorY = cursorY.coerceIn(0f, height.toFloat())
+        }
+    }
+
+    override fun onDraw(canvas: Canvas) {
+        super.onDraw(canvas)
+        pointerPath.reset()
+        pointerPath.moveTo(cursorX, cursorY)
+        pointerPath.lineTo(cursorX, cursorY + dp(23))
+        pointerPath.lineTo(cursorX + dp(6), cursorY + dp(17))
+        pointerPath.lineTo(cursorX + dp(11), cursorY + dp(28))
+        pointerPath.lineTo(cursorX + dp(16), cursorY + dp(25))
+        pointerPath.lineTo(cursorX + dp(11), cursorY + dp(14))
+        pointerPath.lineTo(cursorX + dp(20), cursorY + dp(14))
+        pointerPath.close()
+        canvas.drawPath(pointerPath, outlinePaint)
+        canvas.drawPath(pointerPath, fillPaint)
+    }
+
+    override fun onTouchEvent(event: MotionEvent): Boolean {
+        when (event.actionMasked) {
+            MotionEvent.ACTION_DOWN -> {
+                lastTouchX = event.x
+                lastTouchY = event.y
+                lastTwoFingerY = event.y
+                return true
+            }
+            MotionEvent.ACTION_POINTER_DOWN -> {
+                if (event.pointerCount >= 2) lastTwoFingerY = averagePointerY(event)
+                return true
+            }
+            MotionEvent.ACTION_MOVE -> {
+                if (event.pointerCount >= 2) {
+                    val nextY = averagePointerY(event)
+                    val delta = nextY - lastTwoFingerY
+                    if (kotlin.math.abs(delta) >= dp(2)) sendWheel(delta, event.eventTime)
+                    lastTwoFingerY = nextY
+                } else {
+                    cursorX = (cursorX + event.x - lastTouchX).coerceIn(0f, width.toFloat())
+                    cursorY = (cursorY + event.y - lastTouchY).coerceIn(0f, height.toFloat())
+                    lastTouchX = event.x
+                    lastTouchY = event.y
+                    sendHover(event.eventTime)
+                    invalidate()
+                }
+                return true
+            }
+            MotionEvent.ACTION_UP -> {
+                sendClick(event.eventTime)
+                performClick()
+                return true
+            }
+            MotionEvent.ACTION_CANCEL -> return true
+        }
+        return true
+    }
+
+    override fun performClick(): Boolean {
+        super.performClick()
+        return true
+    }
+
+    private fun averagePointerY(event: MotionEvent): Float {
+        var sum = 0f
+        for (index in 0 until event.pointerCount) sum += event.getY(index)
+        return sum / event.pointerCount.coerceAtLeast(1)
+    }
+
+    private fun sendHover(eventTime: Long = SystemClock.uptimeMillis()) {
+        val event = MotionEvent.obtain(eventTime, eventTime, MotionEvent.ACTION_HOVER_MOVE, cursorX, cursorY, 0)
+        event.source = InputDevice.SOURCE_MOUSE
+        target.dispatchGenericMotionEvent(event)
+        event.recycle()
+    }
+
+    private fun sendWheel(deltaY: Float, eventTime: Long) {
+        val event = MotionEvent.obtain(eventTime - 1, eventTime, MotionEvent.ACTION_SCROLL, cursorX, cursorY, 0)
+        event.source = InputDevice.SOURCE_MOUSE
+        event.setAxisValue(MotionEvent.AXIS_VSCROLL, -deltaY / dp(48).coerceAtLeast(1f))
+        target.dispatchGenericMotionEvent(event)
+        event.recycle()
+    }
+
+    private fun sendClick(eventTime: Long) {
+        sendHover(eventTime)
+        val down = MotionEvent.obtain(eventTime, eventTime, MotionEvent.ACTION_DOWN, cursorX, cursorY, 0)
+        down.source = InputDevice.SOURCE_MOUSE
+        down.setButtonState(MotionEvent.BUTTON_PRIMARY)
+        target.dispatchTouchEvent(down)
+        down.recycle()
+
+        val up = MotionEvent.obtain(eventTime, eventTime + 1, MotionEvent.ACTION_UP, cursorX, cursorY, 0)
+        up.source = InputDevice.SOURCE_MOUSE
+        up.setButtonState(MotionEvent.BUTTON_PRIMARY)
+        target.dispatchTouchEvent(up)
+        up.recycle()
+    }
+
+    private fun dp(value: Int): Float = value * resources.displayMetrics.density
+}
+
 class MainActivity : Activity() {
     private lateinit var editor: ModifierAwareWebView
+    private lateinit var editorContainer: FrameLayout
+    private lateinit var cursorOverlay: CursorOverlayView
     private lateinit var keyboardBar: HorizontalScrollView
     private lateinit var loadingProgressBar: ProgressBar
     private val modifierButtons = mutableMapOf<Int, Button>()
@@ -129,8 +293,10 @@ class MainActivity : Activity() {
     private var desktopMode = false
     private var pageZoom = 1.0f
     private var keyBarVisible = true
+    private var cursorModeEnabled = false
     private var zoomLabelButton: Button? = null
     private var desktopModeButton: Button? = null
+    private var cursorModeButton: Button? = null
     private var backInvokedCallback: OnBackInvokedCallback? = null
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -238,6 +404,10 @@ class MainActivity : Activity() {
             onImeShortcut = { keyCode, modifiers ->
                 activeModifiers = modifiers
                 sendKey(keyCode)
+            },
+            onModifierConsumed = {
+                activeModifiers = 0
+                syncModifierButtons()
             }
         ).apply {
             setLayerType(View.LAYER_TYPE_HARDWARE, null)
