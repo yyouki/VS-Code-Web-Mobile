@@ -2,6 +2,7 @@ package com.example.vscodemobile
 
 import android.app.Activity
 import android.app.AlertDialog
+import android.content.Context
 import android.content.Intent
 import android.graphics.Color
 import android.net.Uri
@@ -13,10 +14,14 @@ import android.text.InputType
 import android.view.View
 import android.view.MotionEvent
 import android.view.ViewConfiguration
+import android.view.inputmethod.EditorInfo
+import android.view.inputmethod.InputConnection
+import android.view.inputmethod.InputConnectionWrapper
 import android.view.inputmethod.InputMethodManager
 import android.window.OnBackInvokedCallback
 import android.window.OnBackInvokedDispatcher
 import android.provider.DocumentsContract
+import android.provider.OpenableColumns
 import android.util.Base64
 import android.view.Gravity
 import android.view.InputDevice
@@ -24,6 +29,7 @@ import android.view.KeyEvent
 import android.view.ViewGroup
 import android.view.WindowManager
 import android.webkit.CookieManager
+import android.webkit.MimeTypeMap
 import android.webkit.ValueCallback
 import android.webkit.WebChromeClient
 import androidx.webkit.WebMessageCompat
@@ -50,8 +56,48 @@ import org.json.JSONObject
 import java.io.ByteArrayOutputStream
 import java.util.concurrent.Executors
 
+/**
+ * WebView subclass that translates a latched CTRL/META + letter into a real key event.
+ * Most Android IMEs commit letters through InputConnection.commitText() instead of key events,
+ * which otherwise makes the editor receive a plain letter (for example, "A" instead of Ctrl+A).
+ */
+private class ModifierAwareWebView(
+    context: Context,
+    private val modifierProvider: () -> Int,
+    private val onImeShortcut: (Int, Int) -> Unit
+) : WebView(context) {
+    override fun onCreateInputConnection(outAttrs: EditorInfo): InputConnection? {
+        val target = super.onCreateInputConnection(outAttrs) ?: return null
+        return object : InputConnectionWrapper(target, true) {
+            override fun commitText(text: CharSequence?, newCursorPosition: Int): Boolean {
+                val modifiers = modifierProvider()
+                val committed = text?.toString().orEmpty()
+                val hasCommandModifier =
+                    modifiers and (KeyEvent.META_CTRL_ON or KeyEvent.META_META_ON) != 0
+
+                if (hasCommandModifier && committed.length == 1) {
+                    val character = committed[0].uppercaseChar()
+                    if (character in 'A'..'Z') {
+                        // Replace any active IME composition with an empty commit, not the typed letter.
+                        super.commitText("", 1)
+                        this@ModifierAwareWebView.post {
+                            onImeShortcut(
+                                KeyEvent.KEYCODE_A + (character - 'A'),
+                                modifiers
+                            )
+                        }
+                        return true
+                    }
+                }
+
+                return super.commitText(text, newCursorPosition)
+            }
+        }
+    }
+}
+
 class MainActivity : Activity() {
-    private lateinit var editor: WebView
+    private lateinit var editor: ModifierAwareWebView
     private lateinit var keyboardBar: HorizontalScrollView
     private lateinit var loadingProgressBar: ProgressBar
     private val modifierButtons = mutableMapOf<Int, Button>()
@@ -179,7 +225,14 @@ class MainActivity : Activity() {
             LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(2))
         )
 
-        editor = WebView(this).apply {
+        editor = ModifierAwareWebView(
+            context = this,
+            modifierProvider = { activeModifiers },
+            onImeShortcut = { keyCode, modifiers ->
+                activeModifiers = modifiers
+                sendKey(keyCode)
+            }
+        ).apply {
             setLayerType(View.LAYER_TYPE_HARDWARE, null)
             setBackgroundColor(Color.rgb(30, 30, 30))
             isFocusable = true
@@ -192,7 +245,8 @@ class MainActivity : Activity() {
             settings.allowContentAccess = false
             settings.javaScriptCanOpenWindowsAutomatically = true
             settings.setSupportMultipleWindows(true)
-            settings.setSupportZoom(true) // Programmatic zoom works; built-in pinch controls stay disabled.
+            // Zoom is controlled with CSS page zoom; native WebView pinch gestures remain disabled.
+            settings.setSupportZoom(false)
             settings.builtInZoomControls = false
             settings.displayZoomControls = false
             settings.useWideViewPort = true
@@ -251,7 +305,7 @@ class MainActivity : Activity() {
                     super.onPageFinished(view, url)
                     val loadedUri = Uri.parse(url)
                     CookieManager.getInstance().flush()
-                    applySavedPageZoom(view)
+                    applyPagePresentation(view)
                     if (loadedUri.scheme == "https" && loadedUri.host == "vscode.dev") {
                         restoreRememberedDirectory(view)
                     }
@@ -291,14 +345,10 @@ class MainActivity : Activity() {
                     pendingFileChooser?.onReceiveValue(null)
                     pendingFileChooser = filePathCallback
 
-                    val intent = Intent(Intent.ACTION_OPEN_DOCUMENT).apply {
-                        addCategory(Intent.CATEGORY_OPENABLE)
-                        type = "*/*"
-                        putExtra(
-                            Intent.EXTRA_ALLOW_MULTIPLE,
-                            fileChooserParams.mode == FileChooserParams.MODE_OPEN_MULTIPLE
-                        )
-                    }
+                    val intent = buildOpenFileIntent(
+                        fileChooserParams.acceptTypes.toList(),
+                        fileChooserParams.mode == FileChooserParams.MODE_OPEN_MULTIPLE
+                    )
 
                     return try {
                         startActivityForResult(intent, REQUEST_UPLOAD_FILE)
@@ -548,40 +598,61 @@ class MainActivity : Activity() {
         val nextZoom = (pageZoom + delta).coerceIn(MIN_PAGE_ZOOM, MAX_PAGE_ZOOM)
         if (nextZoom == pageZoom) return
 
-        val ratio = nextZoom / pageZoom
         pageZoom = nextZoom
-        if (::editor.isInitialized && editor.url != null) {
-            runCatching { editor.zoomBy(ratio) }
-        }
-        getSharedPreferences(PREFERENCES, MODE_PRIVATE)
-            .edit()
-            .putFloat(KEY_PAGE_ZOOM, pageZoom)
-            .apply()
-        zoomLabelButton?.text = "${(pageZoom * 100).toInt()}%"
+        persistPageZoom()
+        if (::editor.isInitialized) applyPagePresentation(editor)
     }
 
     private fun resetPageZoom() {
-        val ratio = 1.0f / pageZoom
-        if (::editor.isInitialized && editor.url != null && pageZoom != 1.0f) {
-            runCatching { editor.zoomBy(ratio) }
-        }
         pageZoom = 1.0f
+        persistPageZoom()
+        if (::editor.isInitialized) applyPagePresentation(editor)
+    }
+
+    private fun persistPageZoom() {
         getSharedPreferences(PREFERENCES, MODE_PRIVATE)
             .edit()
             .putFloat(KEY_PAGE_ZOOM, pageZoom)
             .apply()
-        zoomLabelButton?.text = "100%"
+        zoomLabelButton?.text = "${(pageZoom * 100).toInt()}%"
     }
 
-    private fun applySavedPageZoom(view: WebView) {
-        if (pageZoom != 1.0f) {
-            view.post {
-                if (!isFinishing && !isDestroyed) {
-                    runCatching { view.zoomBy(pageZoom) }
-                }
+    /**
+     * Apply actual document zoom instead of WebView.zoomBy(), which is ignored by
+     * pages that lock the viewport (as vscode.dev does).
+     */
+    private fun applyPagePresentation(view: WebView) {
+        val isDesktop = desktopMode
+        val zoom = pageZoom
+        val script = """
+            (() => {
+              const desktop = $isDesktop;
+              const zoom = $zoom;
+              let viewport = document.querySelector('meta[name="viewport"]');
+              if (!viewport) {
+                viewport = document.createElement('meta');
+                viewport.name = 'viewport';
+                document.head.appendChild(viewport);
+              }
+              viewport.setAttribute(
+                'content',
+                desktop
+                  ? 'width=1280, initial-scale=1.0, maximum-scale=5.0, user-scalable=yes'
+                  : 'width=device-width, initial-scale=1.0, maximum-scale=5.0, user-scalable=yes'
+              );
+              document.documentElement.style.setProperty('zoom', String(zoom), 'important');
+              document.documentElement.style.setProperty('transform-origin', 'top left');
+              window.__androidPageZoom = zoom;
+              window.__androidDesktopViewport = desktop;
+            })();
+        """.trimIndent()
+        view.post {
+            if (!isFinishing && !isDestroyed) {
+                view.evaluateJavascript(script, null)
             }
         }
         zoomLabelButton?.text = "${(pageZoom * 100).toInt()}%"
+        desktopModeButton?.text = if (desktopMode) "Desktop ✓" else "Desktop"
     }
 
     private fun asDesktopUserAgent(userAgent: String): String {
@@ -606,6 +677,7 @@ class MainActivity : Activity() {
             if (desktopMode) asDesktopUserAgent(userAgent) else userAgent
         editor.settings.useWideViewPort = true
         editor.settings.loadWithOverviewMode = desktopMode
+        editor.settings.setSupportZoom(false)
         desktopModeButton?.text = if (desktopMode) "Desktop ✓" else "Desktop"
 
         val currentUrl = editor.url
@@ -616,11 +688,10 @@ class MainActivity : Activity() {
 
     private fun showRemoteDialog() {
         AlertDialog.Builder(this)
-            .setTitle("Open remote workspace")
+            .setTitle("VS Code remote tools")
             .setItems(
                 arrayOf(
-                    "Open GitHub repository",
-                    "Connect to VS Code Tunnel",
+                    "Open VS Code Command Palette",
                     "Open Codespaces dashboard",
                     "Create / resume Codespace for a repository",
                     "Open existing Codespace by name",
@@ -628,81 +699,31 @@ class MainActivity : Activity() {
                 )
             ) { _, which ->
                 when (which) {
-                    0 -> promptOpenRepository()
-                    1 -> promptOpenTunnel()
-                    2 -> openCodespaces()
-                    3 -> promptCreateCodespace()
-                    4 -> promptOpenCodespaceByName()
-                    5 -> openCopilotExtension()
+                    0 -> openVsCodeRemoteCommandPalette()
+                    1 -> openCodespaces()
+                    2 -> promptCreateCodespace()
+                    3 -> promptOpenCodespaceByName()
+                    4 -> openCopilotExtension()
                 }
             }
-            .setNegativeButton("Cancel", null)
+            .setNegativeButton("Close", null)
             .show()
     }
 
-    private fun promptOpenRepository() {
-        val input = EditText(this).apply {
-            hint = "owner/repository"
-            setSingleLine(true)
-            inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_URI
-            setTextColor(Color.WHITE)
-        }
-        val container = LinearLayout(this).apply {
-            setPadding(dp(20), dp(8), dp(20), 0)
-            addView(input)
-        }
-
-        AlertDialog.Builder(this)
-            .setTitle("Open GitHub repository")
-            .setMessage("Enter a repository as owner/name.")
-            .setView(container)
-            .setPositiveButton("Open") { _, _ ->
-                val repository = input.text.toString().trim()
-                if (!Regex("^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$").matches(repository)) {
-                    Toast.makeText(this, "Use the format owner/repository.", Toast.LENGTH_LONG).show()
-                } else {
-                    editor.loadUrl("https://vscode.dev/github/$repository")
-                }
-            }
-            .setNegativeButton("Cancel", null)
-            .show()
-    }
-
-    private fun promptOpenTunnel() {
-        val input = EditText(this).apply {
-            hint = "https://vscode.dev/tunnel/machine/folder"
-            setSingleLine(true)
-            inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_URI
-            setTextColor(Color.WHITE)
-        }
-        val container = LinearLayout(this).apply {
-            setPadding(dp(20), dp(8), dp(20), 0)
-            addView(input)
-        }
-
-        AlertDialog.Builder(this)
-            .setTitle("Connect to Remote Tunnel")
-            .setMessage("Paste the vscode.dev/tunnel URL shown by the remote machine.")
-            .setView(container)
-            .setPositiveButton("Connect") { _, _ ->
-                val url = input.text.toString().trim()
-                val uri = runCatching { Uri.parse(url) }.getOrNull()
-                val valid = uri?.scheme == "https" &&
-                    uri.host == "vscode.dev" &&
-                    uri.pathSegments.size >= 3 &&
-                    uri.pathSegments.firstOrNull() == "tunnel"
-                if (valid) {
-                    editor.loadUrl(uri.toString())
-                } else {
-                    Toast.makeText(
-                        this,
-                        "Paste a valid https://vscode.dev/tunnel/... URL.",
-                        Toast.LENGTH_LONG
-                    ).show()
-                }
-            }
-            .setNegativeButton("Cancel", null)
-            .show()
+    /**
+     * Repository and tunnel navigation stays inside VS Code's own command system.
+     * No repository URL or tunnel URL is assembled by the Android wrapper.
+     */
+    private fun openVsCodeRemoteCommandPalette() {
+        sendKey(
+            KeyEvent.KEYCODE_P,
+            KeyEvent.META_CTRL_ON or KeyEvent.META_SHIFT_ON
+        )
+        Toast.makeText(
+            this,
+            "In VS Code, run GitHub Repositories: Open Repository... or Remote Tunnels: Connect to Tunnel.",
+            Toast.LENGTH_LONG
+        ).show()
     }
 
     private fun openCodespaces() {
@@ -887,11 +908,20 @@ class MainActivity : Activity() {
                 applyModifierState(args)
             }
             "pickFile" -> {
-                val intent = Intent(Intent.ACTION_OPEN_DOCUMENT).apply {
-                    addCategory(Intent.CATEGORY_OPENABLE)
-                    type = "*/*"
-                    putExtra(Intent.EXTRA_ALLOW_MULTIPLE, args.optBoolean("multiple", false))
-                }
+                val acceptTypes = args.optJSONArray("types")?.let { values ->
+                    buildList {
+                        for (index in 0 until values.length()) {
+                            val item = values.optJSONObject(index) ?: continue
+                            val accept = item.optJSONObject("accept") ?: continue
+                            val keys = accept.keys()
+                            while (keys.hasNext()) add(keys.next())
+                        }
+                    }
+                }.orEmpty()
+                val intent = buildOpenFileIntent(
+                    acceptTypes,
+                    args.optBoolean("multiple", false)
+                )
                 startBridgePicker(requestId, replyProxy, intent, REQUEST_BRIDGE_FILE)
             }
             else -> ioExecutor.execute {
@@ -980,6 +1010,38 @@ class MainActivity : Activity() {
             JSONObject.quote(treeUri.toString()) + "," +
             JSONObject.quote(name) + ");"
         view.evaluateJavascript(script, null)
+    }
+
+    private fun buildOpenFileIntent(acceptTypes: List<String>, allowMultiple: Boolean): Intent {
+        val mimeTypes = acceptTypes
+            .mapNotNull { value ->
+                val candidate = value.trim().lowercase()
+                when {
+                    candidate.contains("/") -> candidate
+                    candidate.startsWith(".") -> MimeTypeMap.getSingleton()
+                        .getMimeTypeFromExtension(candidate.removePrefix("."))
+                    else -> null
+                }
+            }
+            .distinct()
+
+        return Intent(Intent.ACTION_OPEN_DOCUMENT).apply {
+            addCategory(Intent.CATEGORY_OPENABLE)
+            type = when (mimeTypes.size) {
+                0 -> "*/*"
+                1 -> mimeTypes.first()
+                else -> "*/*"
+            }
+            if (mimeTypes.size > 1) {
+                putExtra(Intent.EXTRA_MIME_TYPES, mimeTypes.toTypedArray())
+            }
+            putExtra(Intent.EXTRA_ALLOW_MULTIPLE, allowMultiple)
+            addFlags(
+                Intent.FLAG_GRANT_READ_URI_PERMISSION or
+                    Intent.FLAG_GRANT_WRITE_URI_PERMISSION or
+                    Intent.FLAG_GRANT_PERSISTABLE_URI_PERMISSION
+            )
+        }
     }
 
     private fun performStorageOperation(method: String, args: JSONObject): Any {
@@ -1266,18 +1328,28 @@ class MainActivity : Activity() {
     }
 
     private fun displayName(uri: Uri): String {
-        var name = "Selected folder"
-        // ACTION_OPEN_DOCUMENT_TREE returns a tree URI; query its root document URI instead.
-        val queryUri = runCatching {
-            if (DocumentsContract.isTreeUri(uri)) {
-                val rootDocumentId = DocumentsContract.getTreeDocumentId(uri)
-                DocumentsContract.buildDocumentUriUsingTree(uri, rootDocumentId)
-            } else {
-                uri
+        // ACTION_OPEN_DOCUMENT can return MediaStore, Downloads, cloud-provider, or document URIs.
+        val openableName = runCatching {
+            contentResolver.query(
+                uri,
+                arrayOf(OpenableColumns.DISPLAY_NAME),
+                null,
+                null,
+                null
+            )?.use { cursor ->
+                if (cursor.moveToFirst()) {
+                    cursor.getString(cursor.getColumnIndexOrThrow(OpenableColumns.DISPLAY_NAME))
+                } else null
             }
-        }.getOrDefault(uri)
+        }.getOrNull()
+        if (!openableName.isNullOrBlank()) return openableName
 
-        runCatching {
+        val documentName = runCatching {
+            val queryUri = if (DocumentsContract.isTreeUri(uri)) {
+                val rootId = DocumentsContract.getTreeDocumentId(uri)
+                DocumentsContract.buildDocumentUriUsingTree(uri, rootId)
+            } else uri
+
             contentResolver.query(
                 queryUri,
                 arrayOf(DocumentsContract.Document.COLUMN_DISPLAY_NAME),
@@ -1285,10 +1357,14 @@ class MainActivity : Activity() {
                 null,
                 null
             )?.use { cursor ->
-                if (cursor.moveToFirst()) name = cursor.getString(0) ?: name
+                if (cursor.moveToFirst()) cursor.getString(0) else null
             }
-        }
-        return name
+        }.getOrNull()
+
+        return documentName
+            ?.takeIf { it.isNotBlank() }
+            ?: uri.lastPathSegment?.substringAfterLast('/')?.takeIf { it.isNotBlank() }
+            ?: "Selected item"
     }
 
     @Deprecated("Legacy activity result API retained for broad Android compatibility.")
@@ -1420,11 +1496,14 @@ class MainActivity : Activity() {
     }
 
     private fun persistFilePermission(uri: Uri, flags: Int) {
+        val persistable = flags and Intent.FLAG_GRANT_PERSISTABLE_URI_PERMISSION
         val grants = flags and (
             Intent.FLAG_GRANT_READ_URI_PERMISSION or
                 Intent.FLAG_GRANT_WRITE_URI_PERMISSION
             )
-        runCatching { contentResolver.takePersistableUriPermission(uri, grants) }
+        if (persistable != 0 && grants != 0) {
+            runCatching { contentResolver.takePersistableUriPermission(uri, grants) }
+        }
     }
 
     private fun showAboutDialog() {
@@ -1546,17 +1625,35 @@ class MainActivity : Activity() {
 
     private fun sendKey(keyCode: Int, extraModifiers: Int = 0) {
         editor.requestFocus()
-        val meta = activeModifiers or extraModifiers
+        val requestedMeta = activeModifiers or extraModifiers
+        val meta = KeyEvent.normalizeMetaState(requestedMeta)
         val downTime = SystemClock.uptimeMillis()
         val source = InputDevice.SOURCE_KEYBOARD
 
+        // Send a paired key event carrying the modifier state to Chromium's input pipeline.
         val down = KeyEvent(
-            downTime, downTime, KeyEvent.ACTION_DOWN, keyCode, 0, meta,
-            -1, 0, 0, source
+            downTime,
+            downTime,
+            KeyEvent.ACTION_DOWN,
+            keyCode,
+            0,
+            meta,
+            KeyEvent.VIRTUAL_KEYBOARD,
+            0,
+            KeyEvent.FLAG_FROM_SYSTEM,
+            source
         )
         val up = KeyEvent(
-            downTime, downTime + 1, KeyEvent.ACTION_UP, keyCode, 0, meta,
-            -1, 0, 0, source
+            downTime,
+            downTime + 1,
+            KeyEvent.ACTION_UP,
+            keyCode,
+            0,
+            meta,
+            KeyEvent.VIRTUAL_KEYBOARD,
+            0,
+            KeyEvent.FLAG_FROM_SYSTEM,
+            source
         )
 
         editor.dispatchKeyEvent(down)
