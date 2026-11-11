@@ -7,7 +7,7 @@ An independent Android wrapper for the official Visual Studio Code web editor at
 - Android WebView that opens VS Code for the Web.
 - Immersive layout: the status bar is hidden, the navigation bar remains available, and a swipe from the top temporarily reveals system bars.
 - Display-cutout/notch support with safe insets for app controls.
-- Dedicated **⌨** control, modifier-aware Android IME and hardware-key event handling, native WebView zoom buttons, frame-coalesced pinch zoom, and configurable viewport profiles.
+- Dedicated **⌨** control, modifier-aware Android IME and hardware-key event handling, native WebView zoom controls without an app-imposed total zoom ceiling, configurable viewport profiles, orientation controls, and a PC-style virtual pointer.
 - One horizontally scrollable, hideable key strip containing keyboard control, zoom, desktop mode, optional configurable pointer, CTRL, ALT, SHIFT, META, ESC, TAB, function keys, navigation keys, and programming symbols.
 - Editor scrolling gestures dismiss the on-screen keyboard without intentionally clearing editor focus; a normal tap on a text input is left to VS Code/WebView to request the keyboard.
 - Modifier indicators mirror key states observed by the editor from the Android/physical keyboard.
@@ -34,7 +34,7 @@ Install JDK 21, Android SDK Platform 36, and Gradle 9.5.0.
 
 Debug APK output: app/build/outputs/apk/debug/app-debug.apk
 
-    gradle --no-daemon -PappVersion=0.5.4 :app:assembleRelease
+    gradle --no-daemon -PappVersion=0.5.5 :app:assembleRelease
 
 Release APK output: app/build/outputs/apk/release/app-release.apk
 
@@ -59,14 +59,18 @@ On macOS:
 
     base64 code-web-companion-release.jks | tr -d '\n'
 
-Add the following four values under **Repository → Settings → Secrets and variables → Actions**:
+On Windows PowerShell (copies the Base64 value to the clipboard):
+
+    [Convert]::ToBase64String([IO.File]::ReadAllBytes('.\\code-web-companion-release.jks')) | Set-Clipboard
+
+Add the following four values under **Repository → Settings → Secrets and variables → Actions**. This uses the free JDK `keytool` utility and GitHub repository secrets; no paid signing service is required:
 
 - ANDROID_KEYSTORE_BASE64 — the Base64 output.
 - ANDROID_KEYSTORE_PASSWORD — the keystore password.
 - ANDROID_KEY_ALIAS — `code-web-companion` (or the alias you chose).
 - ANDROID_KEY_PASSWORD — the key password.
 
-Never commit the `.jks` file or place its passwords in the repository. Keep a secure backup: losing the keystore prevents signing compatible updates. The earlier v0.2.0 preview used a temporary debug key, so it cannot be upgraded in-place with a newly generated production key; uninstall that preview before installing the first production-signed APK.
+Never commit the `.jks` file or place its passwords in the repository. Keep two secure backups outside the repository: losing the keystore prevents signing compatible updates. Add the values only in GitHub repository secrets; do not paste the keystore or passwords into chat. The earlier v0.2.0 preview used a temporary debug key, so it cannot be upgraded in-place with a newly generated production key; uninstall that preview before installing the first production-signed APK.
 
 Without all four secrets, the workflow signs a preview APK with the temporary debug keystore on the runner and marks the GitHub Release as a pre-release. This fallback is for testing only; separate workflow runs can use different debug keys and therefore are not reliable upgrades.
 
@@ -76,19 +80,19 @@ The local-folder integration is an experimental compatibility layer, not a compl
 
 The bridge does not provide reliable live file-watcher notifications because Storage Access Framework providers vary in their change-notification support. VS Code's built-in editor tabs remain available inside the page, but this app does not create separate native WebView tabs or windows.
 
-## GitHub Settings Sync
+## GitHub and Microsoft sign-in
 
-Settings Sync is handled by VS Code itself; there is no separate native Sync button. In VS Code, open the Manage gear menu or Accounts menu, choose **Backup and Sync Settings**, select the categories, and sign in with GitHub. The wrapper enables WebView popups and third-party cookies for the sign-in flow. Some OAuth providers restrict embedded WebViews, so GitHub sign-in must still be verified on the target Android device. Do not enter credentials on pages unless the address belongs to the expected provider.
+Use **Remote → Accounts: Sign In** to open VS Code's provider picker, or **Remote → Settings Sync: Turn On**. The OAuth popup is now displayed as a visible in-app WebView so provider pages and the callback can remain in the same window. If a provider blocks embedded WebViews, use **Remote → Open VS Code in system browser** as a fallback. The system browser and app WebView use separate cookie stores, so signing in externally may not authenticate the in-app session; return to the app and retry the VS Code Accounts flow if needed. Only enter credentials on expected GitHub or Microsoft provider pages.
 
 ## GitHub repositories and Remote Tunnels
 
 These actions are intentionally initiated inside VS Code, not through an APK-specific repository or tunnel form. Open the VS Code Command Palette with **Ctrl+Shift+P**. To open a repository, run **GitHub Repositories: Open Repository...** (the GitHub Repositories extension may need to be installed first). To connect to a machine that is already hosting a tunnel, run **Remote Tunnels: Connect to Tunnel**. The VS Code documentation describes these commands and requirements: https://code.visualstudio.com/docs/remote/vscode-web and https://code.visualstudio.com/docs/remote/tunnels/.
 
-## GitHub Codespaces terminal
+## VS Code integrated terminal
 
-Open **Remote → Open GitHub Codespaces**, sign in, then create or resume a Codespace and open it in the browser editor. When the Codespace browser editor opens, this app routes the `*.github.dev` editor into the main WebView. The integrated terminal then runs inside the Codespace's remote environment.
+Use **Remote → Create / resume Codespace for a repository** or **Open existing Codespace by name**. When its `*.github.dev` workspace loads, the app attempts to create an integrated terminal automatically. The **TERM** shortcut or **Remote → Toggle integrated terminal** can show or hide it; **Remote → Create new integrated terminal** creates another one. You can also connect to a PC already running VS Code by using **Remote Tunnels**.
 
-The normal `vscode.dev` editor does not have a local shell or runtime. A Codespace is a remote VM/container and its availability and usage allowance depend on the GitHub account plan. This project does not implement a local Android terminal.
+The plain `vscode.dev` web editor has no local shell/runtime. A terminal runs on a Codespace or connected remote computer, not inside the Android WebView. Codespaces have monthly account-plan usage quotas. A local Android shell would require a separate native terminal/runtime, and is not equivalent to the VS Code integrated terminal.
 
 ## GitHub Codespaces
 
@@ -106,14 +110,14 @@ Choose **Remote → GitHub Copilot extension** to open the Extensions view insid
 ## Navigation and display controls
 
 - **Back** navigates WebView history and returns to `vscode.dev` when leaving another page; it does not finish the app.
-- **⌨** focuses Monaco's input area and explicitly requests the Android on-screen keyboard.
+- **⌨** focuses Monaco's input area and explicitly requests the Android on-screen keyboard. **ALL** focuses the Monaco editor and sends Ctrl+A when the on-screen keyboard's shortcut handling is unreliable.
 - Scrolling/dragging in the editor dismisses the IME after the gesture; a normal tap on a text input is handled by the editor.
-- **− / + / 100%** change native WebView page scale. Pinch zoom is configurable in **Settings** and updates are coalesced to display frames; the zoom value is saved after a pinch gesture ends.
-- **Ptr** toggles a virtual pointer. Open **Settings** to choose its speed, size, theme (classic arrow, crosshair, ring, or dot), and color. Drag to move the pointer, tap to click, and use two fingers to scroll. Pinch zoom follows the app-wide zoom setting.
+- **− / + / zoom label** change native WebView page scale. The app imposes no total zoom ceiling; zoom updates are coalesced to display frames. Android WebView still applies its own renderer limits. Pinch zoom can be enabled or disabled in **Settings**. Zoomed content can be panned using ordinary WebView touch scrolling.
+- **Ptr** toggles a virtual pointer. **Settings** includes PC-style shapes (arrow, hand, I-beam, crosshair, move, resize, forbidden, ring, and dot), 6–48dp size, speed, and color. Drag one finger to move the pointer; tap to click; hold briefly then drag to send a mouse drag for text selection; use two fingers to scroll or pinch.
 - In desktop mode, the page uses a wide viewport; touch panning and pinch zoom are handled by WebView.
 - **Cursor / Ptr** enables a virtual pointer: drag to move, release to click, and use two fingers to scroll. Physical mice use the native WebView pointer path.
 - **Settings → Display viewport** offers the device default and 1280×720, 1600×900, 1920×1080, or 2560×1440 viewport profiles. With Desktop enabled and the default profile selected, the app uses 1280×720. These are browser viewport hints, not changes to the phone panel's physical resolution.
-- **Desktop** changes the WebView user-agent and reloads the current page. Resolution profiles adjust the page's CSS viewport; they do not add desktop-only runtime capabilities to the browser.
+- **Desktop** changes the WebView user-agent and reloads the current page. Resolution profiles adjust the page's CSS viewport; they do not add desktop-only runtime capabilities to the browser. **Settings → Web pages** controls whether ordinary HTTP(S) pages stay inside this app or open in the system browser.
 
 A real-device test is required before treating local folder editing as production-ready.
 
