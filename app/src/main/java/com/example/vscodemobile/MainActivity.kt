@@ -1219,8 +1219,9 @@ class MainActivity : Activity() {
     override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
         super.onActivityResult(requestCode, resultCode, data)
 
-        when (requestCode) {
-            REQUEST_BRIDGE_FOLDER, REQUEST_TOOLBAR_FOLDER -> {
+        try {
+            when (requestCode) {
+                REQUEST_BRIDGE_FOLDER, REQUEST_TOOLBAR_FOLDER -> {
                 val selectedUri = if (resultCode == RESULT_OK) data?.data else null
 
                 if (selectedUri == null) {
@@ -1308,7 +1309,27 @@ class MainActivity : Activity() {
                 val uris = selectedUris(data)
                 uris.forEach { persistFilePermission(it, data.flags) }
                 callback.onReceiveValue(uris.toTypedArray())
+                }
             }
+        } catch (error: Exception) {
+            val pending = pendingBridgePicker
+            pendingBridgePicker = null
+            pending?.let {
+                postBridgeError(
+                    it.replyProxy,
+                    it.requestId,
+                    error.message ?: "Android could not open the selected item.",
+                    "NotAllowedError"
+                )
+            }
+
+            pendingFileChooser?.onReceiveValue(null)
+            pendingFileChooser = null
+            Toast.makeText(
+                this,
+                error.message ?: "Android could not access the selected item.",
+                Toast.LENGTH_LONG
+            ).show()
         }
     }
 
