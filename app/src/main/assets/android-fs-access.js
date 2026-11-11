@@ -46,6 +46,11 @@
 
   // Mirror modifier state from the on-screen or physical keyboard to the native key strip.
   function reportModifierState(event) {
+    // Only modifier-key transitions update the toolbar. A Ctrl+A keyup still has ctrlKey=true;
+    // treating every character event as a modifier update would leave CTRL latched afterward.
+    const modifierKeys = new Set(["control", "alt", "shift", "meta"]);
+    if (event && !modifierKeys.has(String(event.key || "").toLowerCase())) return;
+
     const state = {
       ctrl: Boolean(event && event.ctrlKey),
       alt: Boolean(event && event.altKey),
