@@ -25,6 +25,7 @@ import android.provider.OpenableColumns
 import android.util.Base64
 import android.view.Gravity
 import android.view.InputDevice
+import android.view.KeyCharacterMap
 import android.view.KeyEvent
 import android.view.ViewGroup
 import android.view.WindowManager
@@ -242,7 +243,7 @@ class MainActivity : Activity() {
             settings.domStorageEnabled = true
             settings.databaseEnabled = true
             settings.allowFileAccess = false
-            settings.allowContentAccess = false
+            settings.allowContentAccess = true // SAF returns content:// URIs for selected Android files.
             settings.javaScriptCanOpenWindowsAutomatically = true
             settings.setSupportMultipleWindows(true)
             // Zoom is controlled with CSS page zoom; native WebView pinch gestures remain disabled.
@@ -1638,7 +1639,7 @@ class MainActivity : Activity() {
             keyCode,
             0,
             meta,
-            KeyEvent.VIRTUAL_KEYBOARD,
+            KeyCharacterMap.VIRTUAL_KEYBOARD,
             0,
             KeyEvent.FLAG_FROM_SYSTEM,
             source
@@ -1650,7 +1651,7 @@ class MainActivity : Activity() {
             keyCode,
             0,
             meta,
-            KeyEvent.VIRTUAL_KEYBOARD,
+            KeyCharacterMap.VIRTUAL_KEYBOARD,
             0,
             KeyEvent.FLAG_FROM_SYSTEM,
             source
