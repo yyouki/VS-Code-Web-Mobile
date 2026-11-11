@@ -61,7 +61,7 @@ On macOS:
 
 On Windows PowerShell (copies the Base64 value to the clipboard):
 
-    [Convert]::ToBase64String([IO.File]::ReadAllBytes('.\\code-web-companion-release.jks')) | Set-Clipboard
+    [Convert]::ToBase64String([IO.File]::ReadAllBytes('.\code-web-companion-release.jks')) | Set-Clipboard
 
 Add the following four values under **Repository → Settings → Secrets and variables → Actions**. This uses the free JDK `keytool` utility and GitHub repository secrets; no paid signing service is required:
 
@@ -115,8 +115,8 @@ Choose **Remote → GitHub Copilot extension** to open the Extensions view insid
 - **− / + / zoom label** change native WebView page scale. The app imposes no total zoom ceiling; zoom updates are coalesced to display frames. Android WebView still applies its own renderer limits. Pinch zoom can be enabled or disabled in **Settings**. Zoomed content can be panned using ordinary WebView touch scrolling.
 - **Ptr** toggles a virtual pointer. **Settings** includes PC-style shapes (arrow, hand, I-beam, crosshair, move, resize, forbidden, ring, and dot), 6–48dp size, speed, and color. Drag one finger to move the pointer; tap to click; hold briefly then drag to send a mouse drag for text selection; use two fingers to scroll or pinch.
 - In desktop mode, the page uses a wide viewport; touch panning and pinch zoom are handled by WebView.
-- **Cursor / Ptr** enables a virtual pointer: drag to move, release to click, and use two fingers to scroll. Physical mice use the native WebView pointer path.
-- **Settings → Display viewport** offers the device default and 1280×720, 1600×900, 1920×1080, or 2560×1440 viewport profiles. With Desktop enabled and the default profile selected, the app uses 1280×720. These are browser viewport hints, not changes to the phone panel's physical resolution.
+- **Cursor / Ptr** enables a virtual pointer. Hold then drag to select text; normal drag moves the cursor, tap clicks, and two fingers scroll. Physical mice use the native WebView pointer path.
+- **Settings → Display viewport** offers the device default and 1280×720, 1366×768, 1600×900, 1920×1080, or 2560×1440 viewport profiles. With Desktop enabled and the default profile selected, the app uses 1280×720. These are browser viewport hints, not changes to the phone panel's physical resolution. **Settings → Orientation** can follow device rotation or lock portrait/landscape.
 - **Desktop** changes the WebView user-agent and reloads the current page. Resolution profiles adjust the page's CSS viewport; they do not add desktop-only runtime capabilities to the browser. **Settings → Web pages** controls whether ordinary HTTP(S) pages stay inside this app or open in the system browser.
 
 A real-device test is required before treating local folder editing as production-ready.
