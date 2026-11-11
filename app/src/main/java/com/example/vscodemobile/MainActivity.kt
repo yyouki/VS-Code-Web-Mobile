@@ -146,18 +146,19 @@ class MainActivity : Activity() {
 
         header.addView(
             TextView(this).apply {
-                text = getString(R.string.app_name)
-                textSize = 13f
+                text = "Code Web"
+                textSize = 12f
+                isSingleLine = true
                 setTextColor(Color.WHITE)
                 setPadding(dp(8), 0, 0, 0)
                 layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
             }
         )
 
-        header.addView(makeHeaderButton("Open Folder") { openFolderFromToolbar() })
+        header.addView(makeHeaderButton("Folder") { openFolderFromToolbar() })
         header.addView(makeHeaderButton("Remote") { showRemoteDialog() })
         header.addView(makeHeaderButton("Keys") { toggleKeyboardBar() })
-        header.addView(makeHeaderButton("About") { showAboutDialog() })
+        header.addView(makeHeaderButton("Info") { showAboutDialog() })
         root.addView(
             header,
             LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(44))
