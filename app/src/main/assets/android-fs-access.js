@@ -79,6 +79,9 @@
     const result = await nativeCall("rename", { uri: handle._uri, name: newName });
     handle._uri = result.uri;
     handle.name = result.name;
+    if (Array.isArray(handle._segments) && handle._segments.length > 0) {
+      handle._segments = [...handle._segments.slice(0, -1), result.name];
+    }
     return handle;
   }
 
@@ -110,6 +113,10 @@
     handle._uri = result.uri;
     handle._parentUri = destinationUri;
     handle.name = result.name;
+    const destinationSegments = typeof destinationOrName === "string"
+      ? (handle._segments || []).slice(0, -1)
+      : (destinationOrName._segments || []);
+    handle._segments = [...destinationSegments, result.name];
     return handle;
   }
 
@@ -125,31 +132,31 @@
       async requestPermission() { return "granted"; },
 
       async isSameEntry(other) {
-        return Boolean(other && other.kind === "directory" && other._uri === uri);
+        return Boolean(other && other.kind === "directory" && other._uri === this._uri);
       },
 
       async getDirectoryHandle(childName, options = {}) {
         safeName(childName);
-        let child = (await nativeCall("list", { uri })).find((entry) => entry.name === childName);
+        let child = (await nativeCall("list", { uri: this._uri })).find((entry) => entry.name === childName);
 
         if (!child && options.create) {
-          child = await nativeCall("createDirectory", { parentUri: uri, name: childName });
+          child = await nativeCall("createDirectory", { parentUri: this._uri, name: childName });
         }
 
         if (!child || !child.isDirectory) {
           throw new DOMException("Directory not found", "NotFoundError");
         }
 
-        return directoryHandle(child.uri, child.name, [...segments, child.name], uri);
+        return directoryHandle(child.uri, child.name, [...this._segments, child.name], this._uri);
       },
 
       async getFileHandle(childName, options = {}) {
         safeName(childName);
-        let child = (await nativeCall("list", { uri })).find((entry) => entry.name === childName);
+        let child = (await nativeCall("list", { uri: this._uri })).find((entry) => entry.name === childName);
 
         if (!child && options.create) {
           child = await nativeCall("createFile", {
-            parentUri: uri,
+            parentUri: this._uri,
             name: childName,
             mimeType: "application/octet-stream"
           });
@@ -159,12 +166,12 @@
           throw new DOMException("File not found", "NotFoundError");
         }
 
-        return fileHandle(child.uri, child.name, child.mimeType, [...segments, child.name], uri);
+        return fileHandle(child.uri, child.name, child.mimeType, [...this._segments, child.name], this._uri);
       },
 
       async removeEntry(childName, options = {}) {
         safeName(childName);
-        const child = (await nativeCall("list", { uri })).find((entry) => entry.name === childName);
+        const child = (await nativeCall("list", { uri: this._uri })).find((entry) => entry.name === childName);
         if (!child) throw new DOMException("Entry not found", "NotFoundError");
 
         await nativeCall("delete", {
@@ -175,14 +182,15 @@
 
       async resolve(possibleDescendant) {
         if (!possibleDescendant || !Array.isArray(possibleDescendant._segments)) return null;
+        const ownSegments = this._segments;
         const child = possibleDescendant._segments;
-        if (child.length < segments.length) return null;
+        if (child.length < ownSegments.length) return null;
 
-        for (let index = 0; index < segments.length; index += 1) {
-          if (segments[index] !== child[index]) return null;
+        for (let index = 0; index < ownSegments.length; index += 1) {
+          if (ownSegments[index] !== child[index]) return null;
         }
 
-        return child.slice(segments.length);
+        return child.slice(ownSegments.length);
       },
 
       async rename(newName) {
@@ -194,12 +202,13 @@
       },
 
       async *entries() {
-        const children = await nativeCall("list", { uri });
+        const parentUri = this._uri;
+        const children = await nativeCall("list", { uri: parentUri });
         for (const child of children) {
-          const childSegments = [...segments, child.name];
+          const childSegments = [...this._segments, child.name];
           const handle = child.isDirectory
-            ? directoryHandle(child.uri, child.name, childSegments, uri)
-            : fileHandle(child.uri, child.name, child.mimeType, childSegments, uri);
+            ? directoryHandle(child.uri, child.name, childSegments, parentUri)
+            : fileHandle(child.uri, child.name, child.mimeType, childSegments, parentUri);
           yield [child.name, handle];
         }
       },
@@ -236,7 +245,7 @@
       async requestPermission() { return "granted"; },
 
       async isSameEntry(other) {
-        return Boolean(other && other.kind === "file" && other._uri === uri);
+        return Boolean(other && other.kind === "file" && other._uri === this._uri);
       },
 
       async rename(newName) {
@@ -248,14 +257,15 @@
       },
 
       async getFile() {
-        const result = await nativeCall("read", { uri });
-        return new File([decodeBase64(result.base64)], name, {
+        const result = await nativeCall("read", { uri: this._uri });
+        return new File([decodeBase64(result.base64)], this.name, {
           type: result.mimeType || mimeType,
           lastModified: result.lastModified || Date.now()
         });
       },
 
       async createWritable(options = {}) {
+        const fileUri = this._uri;
         let bytes = new Uint8Array(0);
         if (options.keepExistingData) {
           const oldFile = await this.getFile();
@@ -319,7 +329,7 @@
 
           async close() {
             ensureOpen();
-            await nativeCall("write", { uri, base64: encodeBase64(bytes) });
+            await nativeCall("write", { uri: fileUri, base64: encodeBase64(bytes) });
             closed = true;
           },
 
