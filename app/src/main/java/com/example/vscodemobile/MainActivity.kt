@@ -711,7 +711,16 @@ class MainActivity : Activity() {
     }
 
     private fun openCopilotExtension() {
-        editor.loadUrl(COPILOT_EXTENSION_URL)
+        // Open VS Code's own Extensions view instead of leaving the editor for the Marketplace website.
+        sendKey(
+            KeyEvent.KEYCODE_X,
+            KeyEvent.META_CTRL_ON or KeyEvent.META_SHIFT_ON
+        )
+        Toast.makeText(
+            this,
+            "Extensions opened. Search for GitHub Copilot and install it here.",
+            Toast.LENGTH_LONG
+        ).show()
     }
 
     private fun addControlButton(
@@ -1618,7 +1627,6 @@ class MainActivity : Activity() {
         private const val VSCODE_WEB_URL = "https://vscode.dev/"
         private const val VSCODE_ORIGIN = "https://vscode.dev"
         private const val CODESPACES_URL = "https://github.com/codespaces"
-        private const val COPILOT_EXTENSION_URL = "https://marketplace.visualstudio.com/items?itemName=GitHub.copilot"
         private const val PREFERENCES = "local_workspace"
         private const val KEY_TREE_URI = "selected_tree_uri"
         private const val KEY_DESKTOP_MODE = "desktop_mode"
