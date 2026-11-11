@@ -845,9 +845,10 @@ class MainActivity : Activity() {
                         restoreRememberedDirectory(view)
                     }
                     val loadedHost = loadedUri.host.orEmpty().lowercase()
-                    if (pendingTerminalOnLoad &&
-                        (loadedHost == "github.dev" || loadedHost.endsWith(".github.dev"))
-                    ) {
+                    val loadedRemoteWorkspace =
+                        (loadedHost.endsWith(".github.dev") && loadedHost != "github.dev") ||
+                            (loadedHost == "vscode.dev" && loadedUri.path.orEmpty().startsWith("/tunnel/"))
+                    if (pendingTerminalOnLoad && loadedRemoteWorkspace) {
                         pendingTerminalOnLoad = false
                         editor.postDelayed({ createIntegratedTerminal() }, 1800)
                     }
@@ -972,7 +973,7 @@ class MainActivity : Activity() {
 
         addControlButton(keyboardBar, "⌨") { showInternalKeyboard() }
         addControlButton(keyboardBar, "−") { changePageZoom(zoomIn = false) }
-        zoomLabelButton = makeKeyButton("${(pageZoom * 100).toInt()}%").apply {
+        zoomLabelButton = makeKeyButton(zoomLabel()).apply {
             setOnClickListener { resetPageZoom() }
         }
         rowContent(keyboardBar).addView(zoomLabelButton)
@@ -1365,7 +1366,7 @@ class MainActivity : Activity() {
         view.evaluateJavascript(script) {
             applyNativePageZoom(view)
         }
-        zoomLabelButton?.text = (pageZoom * 100).toInt().toString() + "%"
+        zoomLabelButton?.text = zoomLabel()
         desktopModeButton?.text = if (desktopMode) "Desktop ✓" else "Desktop"
     }
 
@@ -1901,7 +1902,7 @@ class MainActivity : Activity() {
         Toast.makeText(
             this,
             if (cursorModeEnabled) {
-                "Pointer mode: drag one finger to move, release to click, use two fingers to scroll."
+                "Pointer mode: drag one finger to move, tap to click, hold then drag to select, use two fingers to scroll."
             } else {
                 "Pointer mode disabled. Normal touch and physical mouse input are active."
             },
@@ -1909,13 +1910,18 @@ class MainActivity : Activity() {
         ).show()
     }
 
-    private fun isCodespacesWorkspace(): Boolean {
-        val host = runCatching { Uri.parse(editor.url).host.orEmpty().lowercase() }.getOrDefault("")
-        return host == "github.dev" || host.endsWith(".github.dev")
+    private fun isRemoteTerminalWorkspace(): Boolean {
+        val uri = runCatching { Uri.parse(editor.url) }.getOrNull() ?: return false
+        val host = uri.host.orEmpty().lowercase()
+        val isCodespace = host.endsWith(".github.dev") && host != "github.dev"
+        val isRemoteTunnel = host == "vscode.dev" &&
+            (uri.path.orEmpty().startsWith("/tunnel/") ||
+                uri.path.orEmpty().startsWith("/+ms-vscode-remote.remote-tunnels/"))
+        return isCodespace || isRemoteTunnel
     }
 
     private fun toggleIntegratedTerminal() {
-        if (!isCodespacesWorkspace()) {
+        if (!isRemoteTerminalWorkspace()) {
             AlertDialog.Builder(this)
                 .setTitle("VS Code terminal needs a remote runtime")
                 .setMessage(
@@ -1936,7 +1942,7 @@ class MainActivity : Activity() {
     }
 
     private fun createIntegratedTerminal() {
-        if (!isCodespacesWorkspace()) {
+        if (!isRemoteTerminalWorkspace()) {
             toggleIntegratedTerminal()
             return
         }
@@ -1947,6 +1953,7 @@ class MainActivity : Activity() {
     }
 
     private fun selectAllEditorText() {
+        editor.requestFocusFromTouch()
         val focusScript = """
             (() => {
               const focused = document.querySelector('.monaco-editor.focused textarea.inputarea');
