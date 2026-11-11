@@ -315,7 +315,10 @@ class MainActivity : Activity() {
         ViewCompat.requestApplyInsets(root)
         enableImmersiveStatusBar()
         installAndroidFileSystemBridge()
-        editor.loadUrl(VSCODE_WEB_URL)
+        val restoredWebView = savedInstanceState?.let { editor.restoreState(it) } != null
+        if (!restoredWebView) {
+            editor.loadUrl(VSCODE_WEB_URL)
+        }
     }
 
     private fun showAuthenticationPopup(resultMsg: Message): Boolean {
@@ -1453,7 +1456,19 @@ class MainActivity : Activity() {
 
     override fun onResume() {
         super.onResume()
+        if (::editor.isInitialized) editor.onResume()
         enableImmersiveStatusBar()
+    }
+
+    override fun onPause() {
+        if (::editor.isInitialized) editor.onPause()
+        CookieManager.getInstance().flush()
+        super.onPause()
+    }
+
+    override fun onSaveInstanceState(outState: Bundle) {
+        if (::editor.isInitialized) editor.saveState(outState)
+        super.onSaveInstanceState(outState)
     }
 
     override fun onWindowFocusChanged(hasFocus: Boolean) {
