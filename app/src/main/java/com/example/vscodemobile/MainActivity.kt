@@ -17,6 +17,7 @@ import android.text.InputType
 import android.view.View
 import android.view.MotionEvent
 import android.view.PointerIcon
+import android.view.ScaleGestureDetector
 import android.view.ViewConfiguration
 import android.view.inputmethod.EditorInfo
 import android.view.inputmethod.InputConnection
@@ -48,6 +49,9 @@ import android.widget.HorizontalScrollView
 import android.widget.ImageView
 import android.widget.LinearLayout
 import android.widget.ProgressBar
+import android.widget.RadioButton
+import android.widget.RadioGroup
+import android.widget.SeekBar
 import android.widget.TextView
 import android.widget.Toast
 import androidx.core.view.ViewCompat
@@ -139,9 +143,14 @@ private class ModifierAwareWebView(
 /**
  * Touch-controlled pointer: drag with one finger, release to click, and use two fingers to scroll.
  */
+/**
+ * Touchpad-style pointer. One finger moves the cursor; a tap clicks;
+ * two fingers scroll; a pinch changes page zoom.
+ */
 private class CursorOverlayView(
     context: Context,
-    private val target: WebView
+    private val target: WebView,
+    private val onPinchZoom: (Float) -> Unit
 ) : View(context) {
     private val fillPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
         color = Color.WHITE
@@ -150,21 +159,44 @@ private class CursorOverlayView(
     private val outlinePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
         color = Color.BLACK
         style = Paint.Style.STROKE
-        strokeWidth = context.resources.displayMetrics.density * 2f
+        strokeWidth = context.resources.displayMetrics.density * 1.6f
+        strokeJoin = Paint.Join.ROUND
     }
     private val pointerPath = Path()
     private var cursorX = 0f
     private var cursorY = 0f
     private var lastTouchX = 0f
     private var lastTouchY = 0f
+    private var lastTwoFingerX = 0f
     private var lastTwoFingerY = 0f
     private var twoFingerGesture = false
+    private var cursorMoved = false
     private var initialized = false
+    private var speed = 1.35f
+    private var pointerSizeDp = 28
+
+    private val scaleDetector = ScaleGestureDetector(
+        context,
+        object : ScaleGestureDetector.SimpleOnScaleGestureListener() {
+            override fun onScale(detector: ScaleGestureDetector): Boolean {
+                val factor = detector.scaleFactor.coerceIn(0.85f, 1.18f)
+                if (kotlin.math.abs(factor - 1f) > 0.005f) onPinchZoom(factor)
+                return true
+            }
+        }
+    )
 
     init {
         isClickable = true
         isFocusable = false
         setBackgroundColor(Color.TRANSPARENT)
+    }
+
+    fun updateSettings(pointerSize: Int, pointerSpeed: Float, color: Int) {
+        pointerSizeDp = pointerSize.coerceIn(16, 48)
+        speed = pointerSpeed.coerceIn(0.5f, 3.0f)
+        fillPaint.color = color
+        invalidate()
     }
 
     override fun onSizeChanged(width: Int, height: Int, oldWidth: Int, oldHeight: Int) {
@@ -182,43 +214,60 @@ private class CursorOverlayView(
 
     override fun onDraw(canvas: Canvas) {
         super.onDraw(canvas)
+        val size = dp(pointerSizeDp)
         pointerPath.reset()
+        // Classic desktop arrow silhouette, scaled from the user's cursor-size setting.
         pointerPath.moveTo(cursorX, cursorY)
-        pointerPath.lineTo(cursorX, cursorY + dp(23))
-        pointerPath.lineTo(cursorX + dp(6), cursorY + dp(17))
-        pointerPath.lineTo(cursorX + dp(11), cursorY + dp(28))
-        pointerPath.lineTo(cursorX + dp(16), cursorY + dp(25))
-        pointerPath.lineTo(cursorX + dp(11), cursorY + dp(14))
-        pointerPath.lineTo(cursorX + dp(20), cursorY + dp(14))
+        pointerPath.lineTo(cursorX, cursorY + size * 1.02f)
+        pointerPath.lineTo(cursorX + size * 0.25f, cursorY + size * 0.78f)
+        pointerPath.lineTo(cursorX + size * 0.46f, cursorY + size * 1.18f)
+        pointerPath.lineTo(cursorX + size * 0.63f, cursorY + size * 1.08f)
+        pointerPath.lineTo(cursorX + size * 0.43f, cursorY + size * 0.68f)
+        pointerPath.lineTo(cursorX + size * 0.82f, cursorY + size * 0.68f)
         pointerPath.close()
         canvas.drawPath(pointerPath, outlinePaint)
         canvas.drawPath(pointerPath, fillPaint)
     }
 
     override fun onTouchEvent(event: MotionEvent): Boolean {
+        scaleDetector.onTouchEvent(event)
         when (event.actionMasked) {
             MotionEvent.ACTION_DOWN -> {
                 lastTouchX = event.x
                 lastTouchY = event.y
-                lastTwoFingerY = event.y
+                cursorMoved = false
+                twoFingerGesture = false
                 return true
             }
             MotionEvent.ACTION_POINTER_DOWN -> {
                 if (event.pointerCount >= 2) {
                     twoFingerGesture = true
+                    lastTwoFingerX = averagePointerX(event)
                     lastTwoFingerY = averagePointerY(event)
                 }
                 return true
             }
             MotionEvent.ACTION_MOVE -> {
                 if (event.pointerCount >= 2) {
+                    val nextX = averagePointerX(event)
                     val nextY = averagePointerY(event)
-                    val delta = nextY - lastTwoFingerY
-                    if (kotlin.math.abs(delta) >= dp(2)) sendWheel(delta, event.eventTime)
+                    if (!scaleDetector.isInProgress) {
+                        val deltaX = nextX - lastTwoFingerX
+                        val deltaY = nextY - lastTwoFingerY
+                        if (kotlin.math.abs(deltaX) >= dp(2) || kotlin.math.abs(deltaY) >= dp(2)) {
+                            sendWheel(deltaX, deltaY)
+                        }
+                    }
+                    lastTwoFingerX = nextX
                     lastTwoFingerY = nextY
-                } else {
-                    cursorX = (cursorX + event.x - lastTouchX).coerceIn(0f, width.toFloat())
-                    cursorY = (cursorY + event.y - lastTouchY).coerceIn(0f, height.toFloat())
+                } else if (!twoFingerGesture) {
+                    val dx = (event.x - lastTouchX) * speed
+                    val dy = (event.y - lastTouchY) * speed
+                    if (kotlin.math.abs(dx) > dp(1) || kotlin.math.abs(dy) > dp(1)) {
+                        cursorMoved = true
+                    }
+                    cursorX = (cursorX + dx).coerceIn(0f, width.toFloat())
+                    cursorY = (cursorY + dy).coerceIn(0f, height.toFloat())
                     lastTouchX = event.x
                     lastTouchY = event.y
                     sendHover(event.eventTime)
@@ -227,7 +276,8 @@ private class CursorOverlayView(
                 return true
             }
             MotionEvent.ACTION_UP -> {
-                if (!twoFingerGesture) {
+                // Moving the pointer is not a click. Tap the touchpad to click at the cursor.
+                if (!twoFingerGesture && !cursorMoved) {
                     sendClick(event.eventTime)
                     performClick()
                 }
@@ -247,6 +297,12 @@ private class CursorOverlayView(
         return true
     }
 
+    private fun averagePointerX(event: MotionEvent): Float {
+        var sum = 0f
+        for (index in 0 until event.pointerCount) sum += event.getX(index)
+        return sum / event.pointerCount.coerceAtLeast(1)
+    }
+
     private fun averagePointerY(event: MotionEvent): Float {
         var sum = 0f
         for (index in 0 until event.pointerCount) sum += event.getY(index)
@@ -260,24 +316,17 @@ private class CursorOverlayView(
         event.recycle()
     }
 
-    private fun sendWheel(deltaY: Float, eventTime: Long) {
+    private fun sendWheel(deltaX: Float, deltaY: Float) {
         val density = resources.displayMetrics.density.coerceAtLeast(1f)
-        val scale = target.scale.takeIf { it > 0f } ?: 1f
-        val cssX = cursorX / density / scale
-        val cssY = cursorY / density / scale
-        val cssDelta = -deltaY / density
-        val script = """
-            (() => {
-              const point = document.elementFromPoint($cssX, $cssY) || document;
-              point.dispatchEvent(new WheelEvent('wheel', {
-                bubbles: true,
-                cancelable: true,
-                deltaX: 0,
-                deltaY: $cssDelta,
-                deltaMode: WheelEvent.DOM_DELTA_PIXEL
-              }));
-            })();
-        """.trimIndent()
+        val cssX = cursorX / density
+        val cssY = cursorY / density
+        val cssDeltaX = -deltaX / density
+        val cssDeltaY = -deltaY / density
+        val script = "(() => { const point = document.elementFromPoint(" +
+            cssX + ", " + cssY + ") || document; point.dispatchEvent(new WheelEvent('wheel', {" +
+            "bubbles: true, cancelable: true, deltaX: " + cssDeltaX +
+            ", deltaY: " + cssDeltaY +
+            ", deltaMode: WheelEvent.DOM_DELTA_PIXEL})); })();"
         target.evaluateJavascript(script, null)
     }
 
@@ -287,7 +336,6 @@ private class CursorOverlayView(
         down.source = InputDevice.SOURCE_MOUSE
         target.dispatchTouchEvent(down)
         down.recycle()
-
         val up = MotionEvent.obtain(eventTime, eventTime + 1, MotionEvent.ACTION_UP, cursorX, cursorY, 0)
         up.source = InputDevice.SOURCE_MOUSE
         target.dispatchTouchEvent(up)
@@ -296,7 +344,6 @@ private class CursorOverlayView(
 
     private fun dp(value: Int): Float = value * resources.displayMetrics.density
 }
-
 class MainActivity : Activity() {
     private lateinit var editor: ModifierAwareWebView
     private lateinit var editorContainer: FrameLayout
