@@ -528,9 +528,12 @@ private class CursorOverlayView(
     }
 
     private fun dispatchMouseEvent(action: Int, eventTime: Long) {
-        val downTime = if (action == MotionEvent.ACTION_DOWN) eventTime else pointerDownTime
+        if (action == MotionEvent.ACTION_DOWN) {
+            // The emulated mouse press begins after the touchpad long-press delay.
+            pointerDownTime = eventTime
+        }
         val mouseEvent = MotionEvent.obtain(
-            downTime,
+            pointerDownTime,
             eventTime,
             action,
             cursorX,
