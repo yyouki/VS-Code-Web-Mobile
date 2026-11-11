@@ -13,7 +13,12 @@
     return new Promise((resolve, reject) => {
       const id = String(++requestCounter);
       pending.set(id, { resolve, reject });
-      window.AndroidFs.postMessage(JSON.stringify({ id, method, args }));
+      try {
+        window.AndroidFs.postMessage(JSON.stringify({ id, method, args }));
+      } catch (error) {
+        pending.delete(id);
+        reject(error);
+      }
     });
   }
 
@@ -41,6 +46,11 @@
 
   // Mirror modifier state from the on-screen or physical keyboard to the native key strip.
   function reportModifierState(event) {
+    // Only modifier-key transitions update the toolbar. A Ctrl+A keyup still has ctrlKey=true;
+    // treating every character event as a modifier update would leave CTRL latched afterward.
+    const modifierKeys = new Set(["control", "alt", "shift", "meta"]);
+    if (event && !modifierKeys.has(String(event.key || "").toLowerCase())) return;
+
     const state = {
       ctrl: Boolean(event && event.ctrlKey),
       alt: Boolean(event && event.altKey),
@@ -279,9 +289,14 @@
 
       async getFile() {
         const result = await nativeCall("read", { uri: this._uri });
+        if (!result || typeof result.base64 !== "string") {
+          throw new DOMException("Android did not return file contents", "NotReadableError");
+        }
+
+        // Return a real browser File so VS Code can inspect the bytes and metadata.
         return new File([decodeBase64(result.base64)], this.name, {
           type: result.mimeType || mimeType,
-          lastModified: result.lastModified || Date.now()
+          lastModified: Number(result.lastModified) || Date.now()
         });
       },
 
@@ -383,8 +398,12 @@
   window.showOpenFilePicker = async (options = {}) => {
     const files = await nativeCall("pickFile", {
       multiple: Boolean(options.multiple),
-      types: options.types || []
+      types: Array.isArray(options.types) ? options.types : []
     });
+
+    if (!Array.isArray(files)) {
+      throw new DOMException("Android returned an invalid file selection", "NotReadableError");
+    }
 
     return files.map((file) =>
       fileHandle(file.uri, file.name, file.mimeType, [file.name])
