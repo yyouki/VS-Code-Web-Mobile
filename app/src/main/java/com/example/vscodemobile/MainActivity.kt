@@ -621,7 +621,9 @@ class MainActivity : Activity() {
                 arrayOf(
                     "Open GitHub repository",
                     "Connect to VS Code Tunnel",
-                    "Open GitHub Codespaces",
+                    "Open Codespaces dashboard",
+                    "Create / resume Codespace for a repository",
+                    "Open existing Codespace by name",
                     "GitHub Copilot extension"
                 )
             ) { _, which ->
@@ -629,7 +631,9 @@ class MainActivity : Activity() {
                     0 -> promptOpenRepository()
                     1 -> promptOpenTunnel()
                     2 -> openCodespaces()
-                    3 -> openCopilotExtension()
+                    3 -> promptCreateCodespace()
+                    4 -> promptOpenCodespaceByName()
+                    5 -> openCopilotExtension()
                 }
             }
             .setNegativeButton("Cancel", null)
@@ -703,11 +707,62 @@ class MainActivity : Activity() {
 
     private fun openCodespaces() {
         editor.loadUrl(CODESPACES_URL)
-        Toast.makeText(
-            this,
-            "Open a Codespace in the browser editor. Its remote environment provides the integrated terminal.",
-            Toast.LENGTH_LONG
-        ).show()
+    }
+
+    private fun promptCreateCodespace() {
+        val input = EditText(this).apply {
+            hint = "owner/repository"
+            setSingleLine(true)
+            inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_URI
+            setTextColor(Color.WHITE)
+        }
+        val container = LinearLayout(this).apply {
+            setPadding(dp(20), dp(8), dp(20), 0)
+            addView(input)
+        }
+
+        AlertDialog.Builder(this)
+            .setTitle("Create or resume Codespace")
+            .setMessage("Enter a GitHub repository. GitHub will resume a matching Codespace or offer to create one.")
+            .setView(container)
+            .setPositiveButton("Continue") { _, _ ->
+                val repository = input.text.toString().trim()
+                if (!Regex("^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$").matches(repository)) {
+                    Toast.makeText(this, "Use the format owner/repository.", Toast.LENGTH_LONG).show()
+                } else {
+                    editor.loadUrl("https://codespaces.new/$repository?quickstart=1")
+                }
+            }
+            .setNegativeButton("Cancel", null)
+            .show()
+    }
+
+    private fun promptOpenCodespaceByName() {
+        val input = EditText(this).apply {
+            hint = "permanent-codespace-name"
+            setSingleLine(true)
+            inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_URI
+            setTextColor(Color.WHITE)
+        }
+        val container = LinearLayout(this).apply {
+            setPadding(dp(20), dp(8), dp(20), 0)
+            addView(input)
+        }
+
+        AlertDialog.Builder(this)
+            .setTitle("Open existing Codespace")
+            .setMessage("Enter the permanent Codespace name from GitHub. This opens its VS Code web client and remote terminal.")
+            .setView(container)
+            .setPositiveButton("Open") { _, _ ->
+                val name = input.text.toString().trim().lowercase()
+                if (!Regex("^[a-z0-9][a-z0-9-]*$").matches(name)) {
+                    Toast.makeText(this, "Enter the permanent Codespace name.", Toast.LENGTH_LONG).show()
+                } else {
+                    editor.loadUrl("https://$name.github.dev")
+                }
+            }
+            .setNegativeButton("Cancel", null)
+            .show()
     }
 
     private fun openCopilotExtension() {
