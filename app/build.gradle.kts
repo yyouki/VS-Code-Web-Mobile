@@ -12,8 +12,8 @@ android {
         applicationId = "com.example.vscodemobile"
         minSdk = 24
         targetSdk = 36
-        versionCode = 9
-        versionName = providers.gradleProperty("appVersion").orElse("0.5.4").get()
+        versionCode = 10
+        versionName = providers.gradleProperty("appVersion").orElse("0.5.5").get()
     }
 
     signingConfigs {
