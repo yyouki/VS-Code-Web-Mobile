@@ -41,6 +41,9 @@ jobs:
         with:
           gradle-version: '9.5.0'
 
+      - name: Validate Android filesystem shim
+        run: node --check app/src/main/assets/android-fs-access.js
+
       - name: Build debug APK
         run: gradle --no-daemon :app:assembleDebug
 
