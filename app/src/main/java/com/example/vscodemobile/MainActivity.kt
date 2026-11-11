@@ -35,6 +35,7 @@ import android.widget.EditText
 import android.widget.HorizontalScrollView
 import android.widget.ImageView
 import android.widget.LinearLayout
+import android.widget.ProgressBar
 import android.widget.TextView
 import android.widget.Toast
 import androidx.core.view.ViewCompat
@@ -52,6 +53,7 @@ import java.util.concurrent.Executors
 class MainActivity : Activity() {
     private lateinit var editor: WebView
     private lateinit var keyboardBar: HorizontalScrollView
+    private lateinit var loadingProgressBar: ProgressBar
     private val modifierButtons = mutableMapOf<Int, Button>()
     private var activeModifiers = 0
     private var editorTouchStartX = 0f
@@ -161,7 +163,23 @@ class MainActivity : Activity() {
             LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(44))
         )
 
+        loadingProgressBar = ProgressBar(
+            this,
+            null,
+            android.R.attr.progressBarStyleHorizontal
+        ).apply {
+            max = 100
+            progress = 0
+            isIndeterminate = false
+            visibility = View.GONE
+        }
+        root.addView(
+            loadingProgressBar,
+            LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(2))
+        )
+
         editor = WebView(this).apply {
+            setLayerType(View.LAYER_TYPE_HARDWARE, null)
             setBackgroundColor(Color.rgb(30, 30, 30))
             isFocusable = true
             isFocusableInTouchMode = true
@@ -216,7 +234,19 @@ class MainActivity : Activity() {
             }
 
             webViewClient = object : WebViewClient() {
+                override fun onPageStarted(
+                    view: WebView,
+                    url: String,
+                    favicon: android.graphics.Bitmap?
+                ) {
+                    super.onPageStarted(view, url, favicon)
+                    loadingProgressBar.progress = 5
+                    loadingProgressBar.visibility = View.VISIBLE
+                }
+
                 override fun onPageFinished(view: WebView, url: String) {
+                    loadingProgressBar.progress = 100
+                    loadingProgressBar.visibility = View.GONE
                     super.onPageFinished(view, url)
                     val loadedUri = Uri.parse(url)
                     CookieManager.getInstance().flush()
@@ -233,6 +263,12 @@ class MainActivity : Activity() {
             }
 
             webChromeClient = object : WebChromeClient() {
+                override fun onProgressChanged(view: WebView, newProgress: Int) {
+                    loadingProgressBar.progress = newProgress
+                    loadingProgressBar.visibility =
+                        if (newProgress >= 100) View.GONE else View.VISIBLE
+                }
+
                 override fun onCreateWindow(
                     view: WebView,
                     isDialog: Boolean,
