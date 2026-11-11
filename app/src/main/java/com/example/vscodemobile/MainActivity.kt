@@ -52,6 +52,7 @@ import android.widget.ProgressBar
 import android.widget.RadioButton
 import android.widget.RadioGroup
 import android.widget.SeekBar
+import android.widget.Switch
 import android.widget.TextView
 import android.widget.Toast
 import androidx.core.view.ViewCompat
@@ -65,6 +66,11 @@ import org.json.JSONArray
 import org.json.JSONObject
 import java.io.ByteArrayOutputStream
 import java.util.concurrent.Executors
+
+private const val POINTER_STYLE_ARROW = 0
+private const val POINTER_STYLE_CROSSHAIR = 1
+private const val POINTER_STYLE_RING = 2
+private const val POINTER_STYLE_DOT = 3
 
 /**
  * Applies latched toolbar modifiers to Android IME text commits.
@@ -147,7 +153,9 @@ private class ModifierAwareWebView(
 private class CursorOverlayView(
     context: Context,
     private val target: WebView,
-    private val onPinchZoom: (Float) -> Unit
+    private val pinchZoomEnabled: () -> Boolean,
+    private val onPinchZoom: (Float) -> Unit,
+    private val onPinchZoomEnd: () -> Unit
 ) : View(context) {
     private val fillPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
         color = Color.WHITE
@@ -171,14 +179,26 @@ private class CursorOverlayView(
     private var initialized = false
     private var speed = 1.35f
     private var pointerSizeDp = 28
+    private var pointerStyle = POINTER_STYLE_ARROW
+    private val accentPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        style = Paint.Style.STROKE
+        strokeCap = Paint.Cap.ROUND
+        strokeJoin = Paint.Join.ROUND
+    }
 
     private val scaleDetector = ScaleGestureDetector(
         context,
         object : ScaleGestureDetector.SimpleOnScaleGestureListener() {
             override fun onScale(detector: ScaleGestureDetector): Boolean {
-                val factor = detector.scaleFactor.coerceIn(0.85f, 1.18f)
-                if (kotlin.math.abs(factor - 1f) > 0.005f) onPinchZoom(factor)
+                if (pinchZoomEnabled()) {
+                    val factor = detector.scaleFactor.coerceIn(0.85f, 1.18f)
+                    if (kotlin.math.abs(factor - 1f) > 0.003f) onPinchZoom(factor)
+                }
                 return true
+            }
+
+            override fun onScaleEnd(detector: ScaleGestureDetector) {
+                if (pinchZoomEnabled()) onPinchZoomEnd()
             }
         }
     )
@@ -189,10 +209,12 @@ private class CursorOverlayView(
         setBackgroundColor(Color.TRANSPARENT)
     }
 
-    fun updateSettings(pointerSize: Int, pointerSpeed: Float, color: Int) {
+    fun updateSettings(pointerSize: Int, pointerSpeed: Float, color: Int, style: Int) {
         pointerSizeDp = pointerSize.coerceIn(16, 48)
         speed = pointerSpeed.coerceIn(0.5f, 3.0f)
         fillPaint.color = color
+        accentPaint.color = color
+        pointerStyle = style.coerceIn(POINTER_STYLE_ARROW, POINTER_STYLE_DOT)
         invalidate()
     }
 
@@ -212,22 +234,54 @@ private class CursorOverlayView(
     override fun onDraw(canvas: Canvas) {
         super.onDraw(canvas)
         val size = dp(pointerSizeDp)
-        pointerPath.reset()
-        // Classic desktop arrow silhouette, scaled from the user's cursor-size setting.
-        pointerPath.moveTo(cursorX, cursorY)
-        pointerPath.lineTo(cursorX, cursorY + size * 1.02f)
-        pointerPath.lineTo(cursorX + size * 0.25f, cursorY + size * 0.78f)
-        pointerPath.lineTo(cursorX + size * 0.46f, cursorY + size * 1.18f)
-        pointerPath.lineTo(cursorX + size * 0.63f, cursorY + size * 1.08f)
-        pointerPath.lineTo(cursorX + size * 0.43f, cursorY + size * 0.68f)
-        pointerPath.lineTo(cursorX + size * 0.82f, cursorY + size * 0.68f)
-        pointerPath.close()
-        canvas.drawPath(pointerPath, outlinePaint)
-        canvas.drawPath(pointerPath, fillPaint)
+        val centerX = cursorX + size * 0.5f
+        val centerY = cursorY + size * 0.5f
+
+        when (pointerStyle) {
+            POINTER_STYLE_CROSSHAIR -> {
+                val arm = size * 0.48f
+                outlinePaint.strokeWidth = dp(4)
+                accentPaint.strokeWidth = dp(2)
+                canvas.drawLine(centerX - arm, centerY, centerX + arm, centerY, outlinePaint)
+                canvas.drawLine(centerX, centerY - arm, centerX, centerY + arm, outlinePaint)
+                canvas.drawCircle(centerX, centerY, size * 0.12f, outlinePaint)
+                canvas.drawLine(centerX - arm, centerY, centerX + arm, centerY, accentPaint)
+                canvas.drawLine(centerX, centerY - arm, centerX, centerY + arm, accentPaint)
+                canvas.drawCircle(centerX, centerY, size * 0.12f, accentPaint)
+                outlinePaint.strokeWidth = resources.displayMetrics.density * 1.6f
+            }
+            POINTER_STYLE_RING -> {
+                outlinePaint.strokeWidth = dp(4)
+                accentPaint.strokeWidth = dp(2)
+                canvas.drawCircle(centerX, centerY, size * 0.44f, outlinePaint)
+                canvas.drawCircle(centerX, centerY, size * 0.44f, accentPaint)
+                canvas.drawCircle(centerX, centerY, size * 0.08f, fillPaint)
+                outlinePaint.strokeWidth = resources.displayMetrics.density * 1.6f
+            }
+            POINTER_STYLE_DOT -> {
+                canvas.drawCircle(centerX, centerY, size * 0.24f, outlinePaint)
+                canvas.drawCircle(centerX, centerY, size * 0.16f, fillPaint)
+            }
+            else -> {
+                pointerPath.reset()
+                // Classic desktop arrow silhouette, scaled from the user's cursor-size setting.
+                pointerPath.moveTo(cursorX, cursorY)
+                pointerPath.lineTo(cursorX, cursorY + size * 1.02f)
+                pointerPath.lineTo(cursorX + size * 0.25f, cursorY + size * 0.78f)
+                pointerPath.lineTo(cursorX + size * 0.46f, cursorY + size * 1.18f)
+                pointerPath.lineTo(cursorX + size * 0.63f, cursorY + size * 1.08f)
+                pointerPath.lineTo(cursorX + size * 0.43f, cursorY + size * 0.68f)
+                pointerPath.lineTo(cursorX + size * 0.82f, cursorY + size * 0.68f)
+                pointerPath.close()
+                canvas.drawPath(pointerPath, outlinePaint)
+                canvas.drawPath(pointerPath, fillPaint)
+            }
+        }
     }
 
     override fun onTouchEvent(event: MotionEvent): Boolean {
-        scaleDetector.onTouchEvent(event)
+        // When pinch is disabled, two-finger gestures remain available for scrolling.
+        if (pinchZoomEnabled()) scaleDetector.onTouchEvent(event)
         when (event.actionMasked) {
             MotionEvent.ACTION_DOWN -> {
                 lastTouchX = event.x
@@ -376,6 +430,11 @@ class MainActivity : Activity() {
     private var cursorSpeed = 1.35f
     private var cursorSizeDp = 28
     private var cursorColor = Color.WHITE
+    private var cursorStyle = POINTER_STYLE_ARROW
+    private var pinchZoomEnabled = true
+    private var viewportWidth = 0
+    private var viewportHeight = 0
+    private var zoomFrameScheduled = false
     private var zoomLabelButton: Button? = null
     private var desktopModeButton: Button? = null
     private var cursorModeButton: Button? = null
@@ -407,6 +466,16 @@ class MainActivity : Activity() {
         cursorSpeed = preferences.getFloat(KEY_CURSOR_SPEED, 1.35f).coerceIn(0.5f, 3.0f)
         cursorSizeDp = preferences.getInt(KEY_CURSOR_SIZE, 28).coerceIn(16, 48)
         cursorColor = preferences.getInt(KEY_CURSOR_COLOR, Color.WHITE)
+        cursorStyle = preferences.getInt(KEY_CURSOR_STYLE, POINTER_STYLE_ARROW)
+            .coerceIn(POINTER_STYLE_ARROW, POINTER_STYLE_DOT)
+        cursorModeEnabled = preferences.getBoolean(KEY_CURSOR_MODE_ENABLED, false)
+        pinchZoomEnabled = preferences.getBoolean(KEY_PINCH_ZOOM_ENABLED, true)
+        viewportWidth = preferences.getInt(KEY_VIEWPORT_WIDTH, 0)
+        viewportHeight = preferences.getInt(KEY_VIEWPORT_HEIGHT, 0)
+        if (viewportWidth <= 0 || viewportHeight <= 0) {
+            viewportWidth = 0
+            viewportHeight = 0
+        }
         keyBarVisible = preferences.getBoolean(KEY_KEYBAR_VISIBLE, true)
 
         window.setSoftInputMode(WindowManager.LayoutParams.SOFT_INPUT_ADJUST_RESIZE)
@@ -462,15 +531,15 @@ class MainActivity : Activity() {
 
         header.addView(makeHeaderButton("Folder") { openFolderFromToolbar() })
         header.addView(makeHeaderButton("Remote") { showRemoteDialog() })
-        headerCursorButton = makeHeaderButton("Ptr") { toggleCursorMode() }.apply {
+        headerCursorButton = makeHeaderButton(if (cursorModeEnabled) "Ptr ✓" else "Ptr") { toggleCursorMode() }.apply {
             setOnLongClickListener {
-                showCursorSettingsDialog()
+                showAppSettingsDialog()
                 true
             }
         }
         header.addView(headerCursorButton)
         header.addView(makeHeaderButton("Keys") { toggleKeyboardBar() })
-        header.addView(makeHeaderButton("Info") { showAboutDialog() })
+        header.addView(makeHeaderButton("Settings") { showAppSettingsDialog() })
         root.addView(
             header,
             LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(44))
@@ -653,18 +722,12 @@ class MainActivity : Activity() {
             this,
             object : ScaleGestureDetector.SimpleOnScaleGestureListener() {
                 override fun onScale(detector: ScaleGestureDetector): Boolean {
-                    val nextZoom = (pageZoom * detector.scaleFactor)
-                        .coerceIn(MIN_PAGE_ZOOM, MAX_PAGE_ZOOM)
-                    if (nextZoom != pageZoom) {
-                        val factor = nextZoom / pageZoom
-                        runCatching { editor.zoomBy(factor) }
-                            .onSuccess {
-                                pageZoom = nextZoom
-                                appliedPageZoom *= factor
-                                persistPageZoom()
-                            }
-                    }
+                    if (pinchZoomEnabled) queuePinchZoom(detector.scaleFactor)
                     return true
+                }
+
+                override fun onScaleEnd(detector: ScaleGestureDetector) {
+                    if (pinchZoomEnabled) persistPageZoom()
                 }
             }
         )
@@ -682,9 +745,15 @@ class MainActivity : Activity() {
                 ViewGroup.LayoutParams.MATCH_PARENT
             )
         )
-        cursorOverlay = CursorOverlayView(this, editor, ::applyPinchZoom).apply {
-            visibility = View.GONE
-            updateSettings(cursorSizeDp, cursorSpeed, cursorColor)
+        cursorOverlay = CursorOverlayView(
+            this,
+            editor,
+            { pinchZoomEnabled },
+            ::queuePinchZoom,
+            ::persistPageZoom
+        ).apply {
+            visibility = if (cursorModeEnabled) View.VISIBLE else View.GONE
+            updateSettings(cursorSizeDp, cursorSpeed, cursorColor, cursorStyle)
         }
         editorContainer.addView(
             cursorOverlay,
@@ -720,10 +789,10 @@ class MainActivity : Activity() {
             setOnClickListener { toggleDesktopMode() }
         }
         rowContent(keyboardBar).addView(desktopModeButton)
-        cursorModeButton = makeKeyButton("Cursor OFF").apply {
+        cursorModeButton = makeKeyButton(if (cursorModeEnabled) "Cursor ON" else "Cursor OFF").apply {
             setOnClickListener { toggleCursorMode() }
             setOnLongClickListener {
-                showCursorSettingsDialog()
+                showAppSettingsDialog()
                 true
             }
         }
@@ -974,25 +1043,54 @@ class MainActivity : Activity() {
         }
     }
 
-    private fun applyPinchZoom(scaleFactor: Float) {
-        val nextZoom = (pageZoom * scaleFactor).coerceIn(MIN_PAGE_ZOOM, MAX_PAGE_ZOOM)
-        if (nextZoom == pageZoom || !::editor.isInitialized) return
+    private fun queuePinchZoom(scaleFactor: Float) {
+        if (!pinchZoomEnabled || !::editor.isInitialized) return
 
-        val factor = nextZoom / pageZoom
-        runCatching { editor.zoomBy(factor) }
-            .onSuccess {
-                pageZoom = nextZoom
-                appliedPageZoom *= factor
-                persistPageZoom()
+        val nextZoom = (pageZoom * scaleFactor).coerceIn(MIN_PAGE_ZOOM, MAX_PAGE_ZOOM)
+        if (kotlin.math.abs(nextZoom - pageZoom) < 0.0005f) return
+        pageZoom = nextZoom
+
+        // Combine all scale samples received before the next display frame into one WebView update.
+        if (!zoomFrameScheduled) {
+            zoomFrameScheduled = true
+            editor.postOnAnimation {
+                zoomFrameScheduled = false
+                val targetZoom = pageZoom
+                val factor = (targetZoom / appliedPageZoom).coerceIn(0.25f, 4f)
+                if (kotlin.math.abs(factor - 1f) > 0.001f) {
+                    runCatching { editor.zoomBy(factor) }
+                        .onSuccess { appliedPageZoom = targetZoom }
+                        .onFailure {
+                            Toast.makeText(
+                                this,
+                                "WebView could not apply pinch zoom.",
+                                Toast.LENGTH_SHORT
+                            ).show()
+                        }
+                }
+                zoomLabelButton?.text = (targetZoom * 100).toInt().toString() + "%"
             }
+        }
     }
 
     private fun applyPagePresentation(view: WebView) {
         val isDesktop = desktopMode
-        val viewport = if (isDesktop) {
-            "width=1280, initial-scale=1.0, minimum-scale=0.25, maximum-scale=4.0, user-scalable=yes"
+        val effectiveWidth = when {
+            viewportWidth > 0 -> viewportWidth
+            desktopMode -> 1280
+            else -> 0
+        }
+        val effectiveHeight = when {
+            viewportHeight > 0 -> viewportHeight
+            desktopMode -> 720
+            else -> 0
+        }
+        val viewport = if (effectiveWidth > 0 && effectiveHeight > 0) {
+            "width=$effectiveWidth, height=$effectiveHeight, initial-scale=1.0, " +
+                "minimum-scale=0.25, maximum-scale=4.0, user-scalable=yes"
         } else {
-            "width=device-width, initial-scale=1.0, minimum-scale=0.25, maximum-scale=4.0, user-scalable=yes"
+            "width=device-width, height=device-height, initial-scale=1.0, " +
+                "minimum-scale=0.25, maximum-scale=4.0, user-scalable=yes"
         }
         val viewportJson = JSONObject.quote(viewport)
         val script = """
@@ -1004,7 +1102,7 @@ class MainActivity : Activity() {
                 document.head.appendChild(meta);
               }
               meta.setAttribute('content', $viewportJson);
-              // Remove the old CSS transform so the native page scale owns zoom.
+              // Remove CSS scaling so native WebView page zoom remains the single zoom source.
               document.documentElement.style.removeProperty('zoom');
               document.documentElement.style.removeProperty('transform-origin');
               if (document.body) {
@@ -1018,7 +1116,7 @@ class MainActivity : Activity() {
         view.evaluateJavascript(script) {
             applyNativePageZoom(view)
         }
-        zoomLabelButton?.text = "${(pageZoom * 100).toInt()}%"
+        zoomLabelButton?.text = (pageZoom * 100).toInt().toString() + "%"
         desktopModeButton?.text = if (desktopMode) "Desktop ✓" else "Desktop"
     }
 
@@ -1224,78 +1322,221 @@ class MainActivity : Activity() {
         rowContent(row).addView(button)
     }
 
-    private fun showCursorSettingsDialog() {
+    private fun showAppSettingsDialog() {
         val panel = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
-            setPadding(dp(20), dp(12), dp(20), dp(8))
+            setPadding(dp(20), dp(8), dp(20), dp(12))
         }
 
-        fun addSettingLabel(label: String) {
+        fun addSection(title: String) {
             panel.addView(TextView(this).apply {
-                text = label
-                textSize = 13f
-                setTextColor(Color.WHITE)
-                setPadding(0, dp(10), 0, dp(3))
+                text = title
+                textSize = 14f
+                setTextColor(Color.DKGRAY)
+                setPadding(0, dp(12), 0, dp(4))
             })
         }
 
-        addSettingLabel("Pointer speed")
+        val defaultResolutionLabel = if (desktopMode) {
+            "Desktop default (1280 × 720)"
+        } else {
+            "Default device"
+        }
+        val resolutions = listOf(
+            Triple(0, 0, defaultResolutionLabel),
+            Triple(1280, 720, "1280 × 720"),
+            Triple(1366, 768, "1366 × 768"),
+            Triple(1600, 900, "1600 × 900"),
+            Triple(1920, 1080, "1920 × 1080"),
+            Triple(2560, 1440, "2560 × 1440")
+        )
+
+        addSection("Display viewport")
+        val resolutionGroup = RadioGroup(this).apply {
+            orientation = RadioGroup.VERTICAL
+        }
+        resolutions.forEachIndexed { index, resolution ->
+            resolutionGroup.addView(RadioButton(this).apply {
+                id = index + 1
+                text = resolution.third
+                textSize = 13f
+                setTextColor(Color.DKGRAY)
+            })
+        }
+        val selectedResolution = resolutions.indexOfFirst {
+            it.first == viewportWidth && it.second == viewportHeight
+        }.takeIf { it >= 0 } ?: 0
+        resolutionGroup.check(selectedResolution + 1)
+        panel.addView(resolutionGroup)
+        panel.addView(TextView(this).apply {
+            text = "These profiles set the browser's CSS viewport. They do not change the phone's physical screen resolution."
+            textSize = 12f
+            setTextColor(Color.DKGRAY)
+            setPadding(0, dp(2), 0, dp(4))
+        })
+
+        addSection("Zoom")
+        val pinchSwitch = Switch(this).apply {
+            text = "Enable pinch-to-zoom"
+            isChecked = pinchZoomEnabled
+            setTextColor(Color.DKGRAY)
+        }
+        panel.addView(pinchSwitch)
+
+        addSection("Virtual cursor")
+        val cursorSwitch = Switch(this).apply {
+            text = "Enable virtual cursor"
+            isChecked = cursorModeEnabled
+            setTextColor(Color.DKGRAY)
+        }
+        panel.addView(cursorSwitch)
+
+        val speedLabel = TextView(this).apply {
+            text = "Cursor speed: " + String.format("%.1fx", cursorSpeed)
+            textSize = 13f
+            setTextColor(Color.DKGRAY)
+            setPadding(0, dp(8), 0, 0)
+        }
+        panel.addView(speedLabel)
         val speedSlider = SeekBar(this).apply {
-            max = 25 // 0.5x to 3.0x, in 0.1x steps.
+            max = 25 // 0.5x through 3.0x, in 0.1x increments.
             progress = ((cursorSpeed - 0.5f) * 10f).toInt().coerceIn(0, max)
         }
+        speedSlider.setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
+            override fun onProgressChanged(seekBar: SeekBar?, progress: Int, fromUser: Boolean) {
+                speedLabel.text = "Cursor speed: " + String.format("%.1fx", 0.5f + progress * 0.1f)
+            }
+            override fun onStartTrackingTouch(seekBar: SeekBar?) = Unit
+            override fun onStopTrackingTouch(seekBar: SeekBar?) = Unit
+        })
         panel.addView(speedSlider)
 
-        addSettingLabel("Pointer size")
+        val sizeLabel = TextView(this).apply {
+            text = "Cursor size: " + cursorSizeDp + " dp"
+            textSize = 13f
+            setTextColor(Color.DKGRAY)
+            setPadding(0, dp(8), 0, 0)
+        }
+        panel.addView(sizeLabel)
         val sizeSlider = SeekBar(this).apply {
-            max = 32 // 16dp to 48dp.
+            max = 32 // 16dp through 48dp.
             progress = (cursorSizeDp - 16).coerceIn(0, max)
         }
+        sizeSlider.setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
+            override fun onProgressChanged(seekBar: SeekBar?, progress: Int, fromUser: Boolean) {
+                sizeLabel.text = "Cursor size: " + (16 + progress) + " dp"
+            }
+            override fun onStartTrackingTouch(seekBar: SeekBar?) = Unit
+            override fun onStopTrackingTouch(seekBar: SeekBar?) = Unit
+        })
         panel.addView(sizeSlider)
 
-        addSettingLabel("Pointer color")
-        val colors = RadioGroup(this).apply {
-            orientation = RadioGroup.HORIZONTAL
+        addSection("Cursor theme")
+        val styleGroup = RadioGroup(this).apply {
+            orientation = RadioGroup.VERTICAL
         }
-        val choices = listOf(
-            Triple(1, "White", Color.WHITE),
-            Triple(2, "Yellow", Color.YELLOW),
-            Triple(3, "Cyan", Color.CYAN)
+        val styles = listOf(
+            "Classic arrow" to POINTER_STYLE_ARROW,
+            "Crosshair" to POINTER_STYLE_CROSSHAIR,
+            "Ring" to POINTER_STYLE_RING,
+            "Dot" to POINTER_STYLE_DOT
         )
-        choices.forEach { (id, label, color) ->
-            colors.addView(RadioButton(this).apply {
-                this.id = id
-                text = label
-                setTextColor(Color.WHITE)
-                buttonTintList = android.content.res.ColorStateList.valueOf(color)
+        styles.forEachIndexed { index, style ->
+            styleGroup.addView(RadioButton(this).apply {
+                id = index + 1
+                text = style.first
+                textSize = 13f
+                setTextColor(Color.DKGRAY)
             })
         }
-        val selectedColorId = when (cursorColor) {
-            Color.YELLOW -> 2
-            Color.CYAN -> 3
-            else -> 1
+        styleGroup.check(cursorStyle + 1)
+        panel.addView(styleGroup)
+
+        addSection("Cursor color")
+        val colorGroup = RadioGroup(this).apply {
+            orientation = RadioGroup.VERTICAL
         }
-        colors.check(selectedColorId)
-        panel.addView(colors)
+        val colorChoices = listOf(
+            Triple(1, "White", Color.WHITE),
+            Triple(2, "Yellow", Color.YELLOW),
+            Triple(3, "Cyan", Color.CYAN),
+            Triple(4, "Magenta", Color.MAGENTA),
+            Triple(5, "Red", Color.RED),
+            Triple(6, "Green", Color.GREEN)
+        )
+        colorChoices.forEach { choice ->
+            colorGroup.addView(RadioButton(this).apply {
+                id = choice.first
+                text = choice.second
+                textSize = 13f
+                setTextColor(Color.DKGRAY)
+                buttonTintList = android.content.res.ColorStateList.valueOf(choice.third)
+            })
+        }
+        val selectedColorId = colorChoices.indexOfFirst { it.third == cursorColor }
+            .let { if (it >= 0) it + 1 else 1 }
+        colorGroup.check(selectedColorId)
+        panel.addView(colorGroup)
+
+        addSection("Keyboard")
+        val keyboardSwitch = Switch(this).apply {
+            text = "Show keyboard shortcut bar"
+            isChecked = keyBarVisible
+            setTextColor(Color.DKGRAY)
+        }
+        panel.addView(keyboardSwitch)
+
+        val aboutButton = Button(this).apply {
+            text = "About Code Web Companion"
+            isAllCaps = false
+            setOnClickListener { showAboutDialog() }
+        }
+        panel.addView(aboutButton)
+
+        val scrollView = android.widget.ScrollView(this).apply {
+            isFillViewport = true
+            addView(panel)
+        }
 
         AlertDialog.Builder(this)
-            .setTitle("Cursor settings")
-            .setView(panel)
+            .setTitle("App settings")
+            .setView(scrollView)
             .setPositiveButton("Save") { _, _ ->
+                val selected = resolutions.getOrElse(resolutionGroup.checkedRadioButtonId - 1) {
+                    resolutions.first()
+                }
+                viewportWidth = selected.first
+                viewportHeight = selected.second
+                pinchZoomEnabled = pinchSwitch.isChecked
+                cursorModeEnabled = cursorSwitch.isChecked
                 cursorSpeed = (0.5f + speedSlider.progress * 0.1f).coerceIn(0.5f, 3.0f)
                 cursorSizeDp = (16 + sizeSlider.progress).coerceIn(16, 48)
-                cursorColor = when (colors.checkedRadioButtonId) {
-                    2 -> Color.YELLOW
-                    3 -> Color.CYAN
-                    else -> Color.WHITE
-                }
+                cursorStyle = (styleGroup.checkedRadioButtonId - 1)
+                    .coerceIn(POINTER_STYLE_ARROW, POINTER_STYLE_DOT)
+                cursorColor = colorChoices.firstOrNull {
+                    it.first == colorGroup.checkedRadioButtonId
+                }?.third ?: Color.WHITE
+                keyBarVisible = keyboardSwitch.isChecked
+
                 getSharedPreferences(PREFERENCES, MODE_PRIVATE)
                     .edit()
+                    .putInt(KEY_VIEWPORT_WIDTH, viewportWidth)
+                    .putInt(KEY_VIEWPORT_HEIGHT, viewportHeight)
+                    .putBoolean(KEY_PINCH_ZOOM_ENABLED, pinchZoomEnabled)
                     .putFloat(KEY_CURSOR_SPEED, cursorSpeed)
                     .putInt(KEY_CURSOR_SIZE, cursorSizeDp)
                     .putInt(KEY_CURSOR_COLOR, cursorColor)
+                    .putInt(KEY_CURSOR_STYLE, cursorStyle)
+                    .putBoolean(KEY_CURSOR_MODE_ENABLED, cursorModeEnabled)
+                    .putBoolean(KEY_KEYBAR_VISIBLE, keyBarVisible)
                     .apply()
-                cursorOverlay.updateSettings(cursorSizeDp, cursorSpeed, cursorColor)
+
+                cursorOverlay.updateSettings(cursorSizeDp, cursorSpeed, cursorColor, cursorStyle)
+                cursorOverlay.visibility = if (cursorModeEnabled) View.VISIBLE else View.GONE
+                cursorModeButton?.text = if (cursorModeEnabled) "Cursor ON" else "Cursor OFF"
+                headerCursorButton?.text = if (cursorModeEnabled) "Ptr ✓" else "Ptr"
+                keyboardBar.visibility = if (keyBarVisible) View.VISIBLE else View.GONE
+                applyPagePresentation(editor)
             }
             .setNegativeButton("Cancel", null)
             .show()
@@ -1303,6 +1544,10 @@ class MainActivity : Activity() {
 
     private fun toggleCursorMode() {
         cursorModeEnabled = !cursorModeEnabled
+        getSharedPreferences(PREFERENCES, MODE_PRIVATE)
+            .edit()
+            .putBoolean(KEY_CURSOR_MODE_ENABLED, cursorModeEnabled)
+            .apply()
         cursorOverlay.visibility = if (cursorModeEnabled) View.VISIBLE else View.GONE
         cursorModeButton?.text = if (cursorModeEnabled) "Cursor ON" else "Cursor OFF"
         headerCursorButton?.text = if (cursorModeEnabled) "Ptr ✓" else "Ptr"
@@ -2298,6 +2543,11 @@ class MainActivity : Activity() {
         private const val KEY_CURSOR_SPEED = "cursor_speed"
         private const val KEY_CURSOR_SIZE = "cursor_size"
         private const val KEY_CURSOR_COLOR = "cursor_color"
+        private const val KEY_CURSOR_STYLE = "cursor_style"
+        private const val KEY_CURSOR_MODE_ENABLED = "cursor_mode_enabled"
+        private const val KEY_PINCH_ZOOM_ENABLED = "pinch_zoom_enabled"
+        private const val KEY_VIEWPORT_WIDTH = "viewport_width"
+        private const val KEY_VIEWPORT_HEIGHT = "viewport_height"
         private const val ZOOM_STEP = 0.1f
         private const val MIN_PAGE_ZOOM = 0.3f
         private const val MAX_PAGE_ZOOM = 3.0f

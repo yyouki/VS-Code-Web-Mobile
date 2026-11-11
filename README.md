@@ -7,7 +7,7 @@ An independent Android wrapper for the official Visual Studio Code web editor at
 - Android WebView that opens VS Code for the Web.
 - Immersive layout: the status bar is hidden, the navigation bar remains available, and a swipe from the top temporarily reveals system bars.
 - Display-cutout/notch support with safe insets for app controls.
-- Dedicated **⌨** control, modifier-aware Android IME and hardware-key event handling, native WebView zoom buttons plus pinch-to-zoom, and mobile/desktop viewport modes.
+- Dedicated **⌨** control, modifier-aware Android IME and hardware-key event handling, native WebView zoom buttons, frame-coalesced pinch zoom, and configurable viewport profiles.
 - One horizontally scrollable, hideable key strip containing keyboard control, zoom, desktop mode, optional configurable pointer, CTRL, ALT, SHIFT, META, ESC, TAB, function keys, navigation keys, and programming symbols.
 - Editor scrolling gestures dismiss the on-screen keyboard without intentionally clearing editor focus; a normal tap on a text input is left to VS Code/WebView to request the keyboard.
 - Modifier indicators mirror key states observed by the editor from the Android/physical keyboard.
@@ -34,7 +34,7 @@ Install JDK 21, Android SDK Platform 36, and Gradle 9.5.0.
 
 Debug APK output: app/build/outputs/apk/debug/app-debug.apk
 
-    gradle --no-daemon -PappVersion=0.5.3 :app:assembleRelease
+    gradle --no-daemon -PappVersion=0.5.4 :app:assembleRelease
 
 Release APK output: app/build/outputs/apk/release/app-release.apk
 
@@ -108,12 +108,12 @@ Choose **Remote → GitHub Copilot extension** to open the Extensions view insid
 - **Back** navigates WebView history and returns to `vscode.dev` when leaving another page; it does not finish the app.
 - **⌨** focuses Monaco's input area and explicitly requests the Android on-screen keyboard.
 - Scrolling/dragging in the editor dismisses the IME after the gesture; a normal tap on a text input is handled by the editor.
-- **− / + / 100%** change native WebView page scale (content becomes smaller below 100% and larger above 100%); pinch-to-zoom is enabled while on-screen zoom buttons are hidden.
-- **Ptr** toggles a desktop-style pointer. Long-press **Ptr** to configure speed, size, and color. Drag to move the pointer, tap to click, use two fingers to scroll, and pinch to zoom while pointer mode is active.
+- **− / + / 100%** change native WebView page scale. Pinch zoom is configurable in **Settings** and updates are coalesced to display frames; the zoom value is saved after a pinch gesture ends.
+- **Ptr** toggles a virtual pointer. Open **Settings** to choose its speed, size, theme (classic arrow, crosshair, ring, or dot), and color. Drag to move the pointer, tap to click, and use two fingers to scroll. Pinch zoom follows the app-wide zoom setting.
 - In desktop mode, the page uses a wide viewport; touch panning and pinch zoom are handled by WebView.
 - **Cursor / Ptr** enables a virtual pointer: drag to move, release to click, and use two fingers to scroll. Physical mice use the native WebView pointer path.
-- **Desktop** uses a wide 1280 CSS-pixel viewport without overview auto-shrinking; horizontal and vertical WebView scrolling are enabled.
-- **Desktop** changes the WebView user-agent and viewport width, then reloads the current page. It changes responsive layout but cannot add desktop-only runtime capabilities to the browser.
+- **Settings → Display viewport** offers the device default and 1280×720, 1600×900, 1920×1080, or 2560×1440 viewport profiles. With Desktop enabled and the default profile selected, the app uses 1280×720. These are browser viewport hints, not changes to the phone panel's physical resolution.
+- **Desktop** changes the WebView user-agent and reloads the current page. Resolution profiles adjust the page's CSS viewport; they do not add desktop-only runtime capabilities to the browser.
 
 A real-device test is required before treating local folder editing as production-ready.
 
