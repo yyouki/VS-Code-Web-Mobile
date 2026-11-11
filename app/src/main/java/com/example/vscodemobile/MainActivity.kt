@@ -803,13 +803,13 @@ class MainActivity : Activity() {
 
         pageZoom = nextZoom
         persistPageZoom()
-        if (::editor.isInitialized) applyPagePresentation(editor)
+        applyNativePageZoom()
     }
 
     private fun resetPageZoom() {
         pageZoom = 1.0f
         persistPageZoom()
-        if (::editor.isInitialized) applyPagePresentation(editor)
+        applyNativePageZoom()
     }
 
     private fun persistPageZoom() {
@@ -821,38 +821,51 @@ class MainActivity : Activity() {
     }
 
     /**
-     * Apply actual document zoom instead of WebView.zoomBy(), which is ignored by
-     * pages that lock the viewport (as vscode.dev does).
+     * Apply browser-style page scale with WebView.zoomBy. CSS zoom had left
+     * the editor occupying only part of the screen below 100%.
      */
+    private fun applyNativePageZoom(view: WebView = editor) {
+        if (view.width <= 0 || view.height <= 0) return
+        view.post {
+            val currentScale = view.scale.takeIf { it > 0f } ?: 1f
+            val factor = (pageZoom / currentScale).coerceIn(0.25f, 4f)
+            if (kotlin.math.abs(factor - 1f) > 0.01f) {
+                runCatching { view.zoomBy(factor) }
+            }
+            zoomLabelButton?.text = "${(pageZoom * 100).toInt()}%"
+        }
+    }
+
     private fun applyPagePresentation(view: WebView) {
         val isDesktop = desktopMode
-        val zoom = pageZoom
+        val viewport = if (isDesktop) {
+            "width=1280, initial-scale=1.0, maximum-scale=5.0, user-scalable=yes"
+        } else {
+            "width=device-width, initial-scale=1.0, maximum-scale=5.0, user-scalable=yes"
+        }
+        val viewportJson = JSONObject.quote(viewport)
         val script = """
             (() => {
-              const desktop = $isDesktop;
-              const zoom = $zoom;
-              let viewport = document.querySelector('meta[name="viewport"]');
-              if (!viewport) {
-                viewport = document.createElement('meta');
-                viewport.name = 'viewport';
-                document.head.appendChild(viewport);
+              let meta = document.querySelector('meta[name="viewport"]');
+              if (!meta) {
+                meta = document.createElement('meta');
+                meta.name = 'viewport';
+                document.head.appendChild(meta);
               }
-              viewport.setAttribute(
-                'content',
-                desktop
-                  ? 'width=1280, initial-scale=1.0, maximum-scale=5.0, user-scalable=yes'
-                  : 'width=device-width, initial-scale=1.0, maximum-scale=5.0, user-scalable=yes'
-              );
-              document.documentElement.style.setProperty('zoom', String(zoom), 'important');
-              document.documentElement.style.setProperty('transform-origin', 'top left');
-              window.__androidPageZoom = zoom;
-              window.__androidDesktopViewport = desktop;
+              meta.setAttribute('content', $viewportJson);
+              // Remove the old CSS transform so the native page scale owns zoom.
+              document.documentElement.style.removeProperty('zoom');
+              document.documentElement.style.removeProperty('transform-origin');
+              if (document.body) {
+                document.body.style.removeProperty('zoom');
+                document.body.style.removeProperty('transform-origin');
+              }
+              window.dispatchEvent(new Event('resize'));
+              window.__androidDesktopViewport = $isDesktop;
             })();
         """.trimIndent()
-        view.post {
-            if (!isFinishing && !isDestroyed) {
-                view.evaluateJavascript(script, null)
-            }
+        view.evaluateJavascript(script) {
+            applyNativePageZoom(view)
         }
         zoomLabelButton?.text = "${(pageZoom * 100).toInt()}%"
         desktopModeButton?.text = if (desktopMode) "Desktop ✓" else "Desktop"
@@ -879,8 +892,9 @@ class MainActivity : Activity() {
         editor.settings.userAgentString =
             if (desktopMode) asDesktopUserAgent(userAgent) else userAgent
         editor.settings.useWideViewPort = true
-        editor.settings.loadWithOverviewMode = desktopMode
-        editor.settings.setSupportZoom(false)
+        // Desktop mode keeps a fixed-width canvas that the user can pan around.
+        editor.settings.loadWithOverviewMode = false
+        editor.settings.setSupportZoom(true)
         desktopModeButton?.text = if (desktopMode) "Desktop ✓" else "Desktop"
 
         val currentUrl = editor.url
