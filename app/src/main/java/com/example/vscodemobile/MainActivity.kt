@@ -371,8 +371,12 @@ class MainActivity : Activity() {
     private var originalUserAgent: String? = null
     private var desktopMode = false
     private var pageZoom = 1.0f
+    private var appliedPageZoom = 1.0f
     private var keyBarVisible = true
     private var cursorModeEnabled = false
+    private var cursorSpeed = 1.35f
+    private var cursorSizeDp = 28
+    private var cursorColor = Color.WHITE
     private var zoomLabelButton: Button? = null
     private var desktopModeButton: Button? = null
     private var cursorModeButton: Button? = null
@@ -401,6 +405,9 @@ class MainActivity : Activity() {
             ?.let { runCatching { Uri.parse(it) }.getOrNull() }
         desktopMode = preferences.getBoolean(KEY_DESKTOP_MODE, false)
         pageZoom = preferences.getFloat(KEY_PAGE_ZOOM, 1.0f).coerceIn(MIN_PAGE_ZOOM, MAX_PAGE_ZOOM)
+        cursorSpeed = preferences.getFloat(KEY_CURSOR_SPEED, 1.35f).coerceIn(0.5f, 3.0f)
+        cursorSizeDp = preferences.getInt(KEY_CURSOR_SIZE, 28).coerceIn(16, 48)
+        cursorColor = preferences.getInt(KEY_CURSOR_COLOR, Color.WHITE)
         keyBarVisible = preferences.getBoolean(KEY_KEYBAR_VISIBLE, true)
 
         window.setSoftInputMode(WindowManager.LayoutParams.SOFT_INPUT_ADJUST_RESIZE)
@@ -456,7 +463,12 @@ class MainActivity : Activity() {
 
         header.addView(makeHeaderButton("Folder") { openFolderFromToolbar() })
         header.addView(makeHeaderButton("Remote") { showRemoteDialog() })
-        headerCursorButton = makeHeaderButton("Ptr") { toggleCursorMode() }
+        headerCursorButton = makeHeaderButton("Ptr") { toggleCursorMode() }.apply {
+            setOnLongClickListener {
+                showCursorSettingsDialog()
+                true
+            }
+        }
         header.addView(headerCursorButton)
         header.addView(makeHeaderButton("Keys") { toggleKeyboardBar() })
         header.addView(makeHeaderButton("Info") { showAboutDialog() })
@@ -506,7 +518,8 @@ class MainActivity : Activity() {
             settings.setSupportMultipleWindows(true)
             // Support viewport-aware zoomBy while hiding Android's built-in pinch/zoom controls.
             settings.setSupportZoom(true)
-            settings.builtInZoomControls = false
+            // Native pinch recognizer on, built-in on-screen zoom buttons off.
+            settings.builtInZoomControls = true
             settings.displayZoomControls = false
             settings.useWideViewPort = true
             // Keep desktop page width intact so it can be panned instead of auto-shrunk/clipped.
@@ -558,6 +571,7 @@ class MainActivity : Activity() {
                     favicon: android.graphics.Bitmap?
                 ) {
                     super.onPageStarted(view, url, favicon)
+                    appliedPageZoom = 1.0f // The WebView page scale resets on full navigation.
                     loadingProgressBar.progress = 5
                     loadingProgressBar.visibility = View.VISIBLE
                 }
@@ -643,8 +657,9 @@ class MainActivity : Activity() {
                 ViewGroup.LayoutParams.MATCH_PARENT
             )
         )
-        cursorOverlay = CursorOverlayView(this, editor).apply {
+        cursorOverlay = CursorOverlayView(this, editor, ::applyPinchZoom).apply {
             visibility = View.GONE
+            updateSettings(cursorSizeDp, cursorSpeed, cursorColor)
         }
         editorContainer.addView(
             cursorOverlay,
@@ -682,6 +697,10 @@ class MainActivity : Activity() {
         rowContent(keyboardBar).addView(desktopModeButton)
         cursorModeButton = makeKeyButton("Cursor OFF").apply {
             setOnClickListener { toggleCursorMode() }
+            setOnLongClickListener {
+                showCursorSettingsDialog()
+                true
+            }
         }
         rowContent(keyboardBar).addView(cursorModeButton)
 
@@ -921,9 +940,9 @@ class MainActivity : Activity() {
     private fun applyPagePresentation(view: WebView) {
         val isDesktop = desktopMode
         val viewport = if (isDesktop) {
-            "width=1280, initial-scale=1.0, maximum-scale=5.0, user-scalable=yes"
+            "width=1280, initial-scale=1.0, minimum-scale=0.25, maximum-scale=4.0, user-scalable=yes"
         } else {
-            "width=device-width, initial-scale=1.0, maximum-scale=5.0, user-scalable=yes"
+            "width=device-width, initial-scale=1.0, minimum-scale=0.25, maximum-scale=4.0, user-scalable=yes"
         }
         val viewportJson = JSONObject.quote(viewport)
         val script = """
