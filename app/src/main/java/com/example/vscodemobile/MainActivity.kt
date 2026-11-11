@@ -534,11 +534,6 @@ class MainActivity : Activity() {
         editor.settings.loadWithOverviewMode = desktopMode
         desktopModeButton?.text = if (desktopMode) "Desktop ✓" else "Desktop"
 
-        editor.evaluateJavascript(
-            "document.querySelector('meta[name=viewport]')?.setAttribute('content'," +
-                "'width=device-width, initial-scale=1.0');",
-            null
-        )
         val currentUrl = editor.url
             ?.takeIf { Uri.parse(it).scheme == "https" }
             ?: VSCODE_WEB_URL
@@ -1425,7 +1420,7 @@ class MainActivity : Activity() {
         modifierButtons[flag] = button
         button.setOnClickListener {
             activeModifiers = activeModifiers xor flag
-            button.text = if ((activeModifiers and flag) != 0) "$label ✓" else label
+            syncModifierButtons()
             editor.requestFocus()
         }
         rowContent(row).addView(button)
@@ -1484,14 +1479,7 @@ class MainActivity : Activity() {
         editor.dispatchKeyEvent(up)
 
         activeModifiers = 0
-        modifierButtons.forEach { (flag, button) ->
-            button.text = when (flag) {
-                KeyEvent.META_CTRL_ON -> "CTRL"
-                KeyEvent.META_ALT_ON -> "ALT"
-                KeyEvent.META_SHIFT_ON -> "SHIFT"
-                else -> button.text
-            }
-        }
+        syncModifierButtons()
     }
 
     private fun symbolKey(symbol: String): Pair<Int, Int>? {
