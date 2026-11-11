@@ -82,7 +82,18 @@ private class ModifierAwareWebView(
                 }
 
                 // Some IMEs send key events rather than committing a text character.
-                val merged = KeyEvent.changeMetaState(event, event.metaState or modifiers)
+                val merged = KeyEvent(
+                    event.downTime,
+                    event.eventTime,
+                    event.action,
+                    event.keyCode,
+                    event.repeatCount,
+                    event.metaState or modifiers,
+                    event.deviceId,
+                    event.scanCode,
+                    event.flags,
+                    event.source
+                )
                 val handled = super.sendKeyEvent(merged)
                 if (event.action == KeyEvent.ACTION_UP && event.isPrintingKey) {
                     this@ModifierAwareWebView.post { onModifierConsumed() }
@@ -250,11 +261,24 @@ private class CursorOverlayView(
     }
 
     private fun sendWheel(deltaY: Float, eventTime: Long) {
-        val event = MotionEvent.obtain(eventTime - 1, eventTime, MotionEvent.ACTION_SCROLL, cursorX, cursorY, 0)
-        event.source = InputDevice.SOURCE_MOUSE
-        event.setAxisValue(MotionEvent.AXIS_VSCROLL, -deltaY / dp(48).coerceAtLeast(1f))
-        target.dispatchGenericMotionEvent(event)
-        event.recycle()
+        val density = resources.displayMetrics.density.coerceAtLeast(1f)
+        val scale = target.scale.takeIf { it > 0f } ?: 1f
+        val cssX = cursorX / density / scale
+        val cssY = cursorY / density / scale
+        val cssDelta = -deltaY / density
+        val script = """
+            (() => {
+              const point = document.elementFromPoint($cssX, $cssY) || document;
+              point.dispatchEvent(new WheelEvent('wheel', {
+                bubbles: true,
+                cancelable: true,
+                deltaX: 0,
+                deltaY: $cssDelta,
+                deltaMode: WheelEvent.DOM_DELTA_PIXEL
+              }));
+            })();
+        """.trimIndent()
+        target.evaluateJavascript(script, null)
     }
 
     private fun sendClick(eventTime: Long) {
