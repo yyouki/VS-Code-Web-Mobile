@@ -141,9 +141,6 @@ private class ModifierAwareWebView(
 }
 
 /**
- * Touch-controlled pointer: drag with one finger, release to click, and use two fingers to scroll.
- */
-/**
  * Touchpad-style pointer. One finger moves the cursor; a tap clicks;
  * two fingers scroll; a pinch changes page zoom.
  */
