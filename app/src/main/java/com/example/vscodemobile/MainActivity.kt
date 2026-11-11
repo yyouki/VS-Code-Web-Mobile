@@ -196,10 +196,7 @@ class MainActivity : Activity() {
                 override fun shouldOverrideUrlLoading(
                     view: WebView,
                     request: WebResourceRequest
-                ): Boolean {
-                    // HTTPS sign-in pages may be required; native file access remains origin-restricted.
-                    return request.url.scheme != "https"
-                }
+                ): Boolean = handleExternalUrl(request.url)
             }
 
             webChromeClient = object : WebChromeClient() {
@@ -327,7 +324,11 @@ class MainActivity : Activity() {
             settings.javaScriptEnabled = true
             settings.domStorageEnabled = true
             settings.javaScriptCanOpenWindowsAutomatically = true
-            settings.setSupportMultipleWindows(false)
+            settings.setSupportMultipleWindows(true)
+            settings.setSupportZoom(true)
+            settings.builtInZoomControls = false
+            settings.displayZoomControls = false
+            settings.userAgentString = editor.settings.userAgentString
             settings.mixedContentMode = android.webkit.WebSettings.MIXED_CONTENT_NEVER_ALLOW
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
                 settings.safeBrowsingEnabled = true
@@ -335,10 +336,26 @@ class MainActivity : Activity() {
             CookieManager.getInstance().setAcceptThirdPartyCookies(this, true)
 
             webViewClient = object : WebViewClient() {
+                override fun onPageFinished(view: WebView, url: String) {
+                    super.onPageFinished(view, url)
+                    CookieManager.getInstance().flush()
+                }
+
                 override fun shouldOverrideUrlLoading(
                     view: WebView,
                     request: WebResourceRequest
-                ): Boolean = request.url.scheme != "https"
+                ): Boolean {
+                    val host = request.url.host.orEmpty()
+                    if (host.endsWith(".github.dev") ||
+                        (host == "vscode.dev" && request.url.path?.startsWith("/tunnel/") == true)
+                    ) {
+                        // Route a Codespace or tunnel editor opened in a popup into the main view.
+                        editor.loadUrl(request.url.toString())
+                        closeAuthenticationPopup()
+                        return true
+                    }
+                    return handleExternalUrl(request.url)
+                }
             }
             webChromeClient = object : WebChromeClient() {
                 override fun onCloseWindow(window: WebView) {
@@ -395,6 +412,31 @@ class MainActivity : Activity() {
 
     private fun closeAuthenticationPopup() {
         authPopupDialog?.dismiss()
+    }
+
+    private fun handleExternalUrl(uri: Uri): Boolean {
+        if (uri.scheme == "https") return false
+
+        return when (uri.scheme?.lowercase()) {
+            "mailto", "tel", "sms", "geo", "intent", "vscode" -> {
+                try {
+                    val intent = if (uri.scheme == "intent") {
+                        Intent.parseUri(uri.toString(), Intent.URI_INTENT_SCHEME)
+                    } else {
+                        Intent(Intent.ACTION_VIEW, uri)
+                    }
+                    startActivity(intent)
+                } catch (_: Exception) {
+                    Toast.makeText(
+                        this,
+                        "This link needs a compatible Android app or browser.",
+                        Toast.LENGTH_LONG
+                    ).show()
+                }
+                true
+            }
+            else -> true
+        }
     }
 
     private fun toggleKeyboardBar() {
