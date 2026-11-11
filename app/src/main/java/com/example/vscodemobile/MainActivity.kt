@@ -9,6 +9,8 @@ import android.os.Build
 import android.os.Bundle
 import android.os.Message
 import android.os.SystemClock
+import android.text.InputType
+import android.view.View
 import android.window.OnBackInvokedCallback
 import android.window.OnBackInvokedDispatcher
 import android.provider.DocumentsContract
@@ -27,6 +29,7 @@ import android.webkit.WebView
 import android.webkit.WebViewClient
 import android.view.inputmethod.InputMethodManager
 import android.widget.Button
+import android.widget.EditText
 import android.widget.HorizontalScrollView
 import android.widget.ImageView
 import android.widget.LinearLayout
@@ -46,6 +49,7 @@ import java.util.concurrent.Executors
 
 class MainActivity : Activity() {
     private lateinit var editor: WebView
+    private lateinit var keyboardBar: HorizontalScrollView
     private val modifierButtons = mutableMapOf<Int, Button>()
     private var activeModifiers = 0
     private val ioExecutor = Executors.newSingleThreadExecutor()
@@ -63,6 +67,7 @@ class MainActivity : Activity() {
     private var originalUserAgent: String? = null
     private var desktopMode = false
     private var pageZoom = 1.0f
+    private var keyBarVisible = true
     private var zoomLabelButton: Button? = null
     private var desktopModeButton: Button? = null
     private var backInvokedCallback: OnBackInvokedCallback? = null
@@ -88,6 +93,8 @@ class MainActivity : Activity() {
         selectedTreeUri = preferences.getString(KEY_TREE_URI, null)
             ?.let { runCatching { Uri.parse(it) }.getOrNull() }
         desktopMode = preferences.getBoolean(KEY_DESKTOP_MODE, false)
+        pageZoom = preferences.getFloat(KEY_PAGE_ZOOM, 1.0f).coerceIn(MIN_PAGE_ZOOM, MAX_PAGE_ZOOM)
+        keyBarVisible = preferences.getBoolean(KEY_KEYBAR_VISIBLE, true)
 
         window.setSoftInputMode(WindowManager.LayoutParams.SOFT_INPUT_ADJUST_RESIZE)
         window.statusBarColor = Color.rgb(30, 30, 30)
@@ -138,6 +145,8 @@ class MainActivity : Activity() {
         )
 
         header.addView(makeHeaderButton("Open Folder") { openFolderFromToolbar() })
+        header.addView(makeHeaderButton("Remote") { showRemoteDialog() })
+        header.addView(makeHeaderButton("Keys") { toggleKeyboardBar() })
         header.addView(makeHeaderButton("About") { showAboutDialog() })
         root.addView(
             header,
@@ -156,11 +165,13 @@ class MainActivity : Activity() {
             settings.allowContentAccess = false
             settings.javaScriptCanOpenWindowsAutomatically = true
             settings.setSupportMultipleWindows(true)
-            settings.setSupportZoom(false) // Zoom is controlled by dedicated toolbar buttons.
+            settings.setSupportZoom(true) // Programmatic zoom works; built-in pinch controls stay disabled.
             settings.builtInZoomControls = false
             settings.displayZoomControls = false
             settings.useWideViewPort = true
             settings.loadWithOverviewMode = desktopMode
+            settings.cacheMode = android.webkit.WebSettings.LOAD_DEFAULT
+            settings.textZoom = 100
             originalUserAgent = settings.userAgentString
             if (desktopMode) {
                 settings.userAgentString = asDesktopUserAgent(originalUserAgent.orEmpty())
@@ -175,6 +186,8 @@ class MainActivity : Activity() {
                 override fun onPageFinished(view: WebView, url: String) {
                     super.onPageFinished(view, url)
                     val loadedUri = Uri.parse(url)
+                    CookieManager.getInstance().flush()
+                    applySavedPageZoom(view)
                     if (loadedUri.scheme == "https" && loadedUri.host == "vscode.dev") {
                         restoreRememberedDirectory(view)
                     }
