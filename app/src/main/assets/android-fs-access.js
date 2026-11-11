@@ -5,6 +5,34 @@
   if (!window.AndroidFs || window.__androidFsShimInstalled) return;
   window.__androidFsShimInstalled = true;
 
+  // VS Code's HTMLFileSystemProvider checks native FileSystemFileHandle and
+  // FileSystemDirectoryHandle instances. The Android bridge implements their
+  // methods, so give bridge handles the matching prototype chain as well.
+  if (typeof window.FileSystemHandle !== "function") {
+    window.FileSystemHandle = class FileSystemHandle {};
+  }
+  if (typeof window.FileSystemFileHandle !== "function") {
+    window.FileSystemFileHandle = class FileSystemFileHandle extends window.FileSystemHandle {};
+  }
+  if (typeof window.FileSystemDirectoryHandle !== "function") {
+    window.FileSystemDirectoryHandle = class FileSystemDirectoryHandle extends window.FileSystemHandle {};
+  }
+
+  function withFileSystemPrototype(handle, kind) {
+    const constructor = kind === "file"
+      ? window.FileSystemFileHandle
+      : window.FileSystemDirectoryHandle;
+    try {
+      Object.setPrototypeOf(handle, constructor.prototype);
+    } catch (error) {
+      throw new DOMException(
+        "This WebView cannot expose a compatible Android file handle",
+        "NotSupportedError"
+      );
+    }
+    return handle;
+  }
+
   const pending = new Map();
   let requestCounter = 0;
   let selectedDirectory = null;
@@ -152,7 +180,7 @@
   }
 
   function directoryHandle(uri, name, segments = [], parentUri = null) {
-    return {
+    const handle = {
       kind: "directory",
       name,
       _uri: uri,
@@ -256,6 +284,7 @@
         return this.entries();
       }
     };
+    return withFileSystemPrototype(handle, "directory");
   }
 
   function fileHandle(
@@ -265,7 +294,7 @@
     segments = [],
     parentUri = null
   ) {
-    return {
+    const handle = {
       kind: "file",
       name,
       _uri: uri,
@@ -375,6 +404,7 @@
         };
       }
     };
+    return withFileSystemPrototype(handle, "file");
   }
 
   // The native header can preselect a folder; File > Open Folder consumes it once.

@@ -7,13 +7,13 @@ An independent Android wrapper for the official Visual Studio Code web editor at
 - Android WebView that opens VS Code for the Web.
 - Immersive layout: the status bar is hidden, the navigation bar remains available, and a swipe from the top temporarily reveals system bars.
 - Display-cutout/notch support with safe insets for app controls.
-- Dedicated **⌨** control, CTRL/ALT/SHIFT/META latch handling for Android IME text commits, CSS-based page zoom in/out/reset, and mobile/desktop viewport modes.
-- One horizontally scrollable, hideable key strip containing the keyboard control, CTRL, ALT, SHIFT, META, ESC, TAB, function keys, navigation keys, and programming symbols.
+- Dedicated **⌨** control, modifier-aware Android IME and hardware-key event handling, native WebView page zoom in/out/reset, and mobile/desktop viewport modes.
+- One horizontally scrollable, hideable key strip containing keyboard control, zoom, desktop mode, optional cursor, CTRL, ALT, SHIFT, META, ESC, TAB, function keys, navigation keys, and programming symbols.
 - Editor scrolling gestures dismiss the on-screen keyboard without intentionally clearing editor focus; a normal tap on a text input is left to VS Code/WebView to request the keyboard.
 - Modifier indicators mirror key states observed by the editor from the Android/physical keyboard.
 - Remote menu entry points for the VS Code Command Palette, GitHub Codespaces, and the GitHub Copilot Extensions view.
 - Android WebView supports sign-in popup windows and shared cookies. OAuth compatibility still depends on the provider and Android WebView.
-- Android Storage Access Framework is invoked when VS Code requests Open Folder or Open File; the last selected folder permission is remembered.
+- Android Storage Access Framework is invoked when VS Code requests Open Folder or Open File. Bridge objects inherit the FileSystem Access handle prototypes expected by VS Code's HTML file provider.
 - A compatibility layer for common File System Access API operations, including rename and provider-dependent move support.
 - Android file picker support for web editor uploads and SAF `content://` URI access.
 - An original app icon. The official Visual Studio Code logo appears only as a link to the official website.
@@ -34,7 +34,7 @@ Install JDK 21, Android SDK Platform 36, and Gradle 9.5.0.
 
 Debug APK output: app/build/outputs/apk/debug/app-debug.apk
 
-    gradle --no-daemon -PappVersion=0.5.1 :app:assembleRelease
+    gradle --no-daemon -PappVersion=0.5.2 :app:assembleRelease
 
 Release APK output: app/build/outputs/apk/release/app-release.apk
 
@@ -72,7 +72,7 @@ Without all four secrets, the workflow signs a preview APK with the temporary de
 
 ## Local storage bridge limitations
 
-The local-folder integration is an experimental compatibility layer, not a complete browser File System Access API implementation. It covers common folder listing, file read/write, create, delete, rename, and move operations. Move support depends on the selected Android document provider. File transfers through the bridge are limited to 32 MB per file. Android may revoke folder permission after the app is reinstalled or app data is cleared. Android's Storage Access Framework does not expose the same capabilities as a desktop filesystem, and some protected locations cannot be selected.
+The local-folder integration is an experimental compatibility layer, not a complete browser File System Access API implementation. Its file and directory handles use the prototype types expected by VS Code's HTML file provider. It covers common folder listing, file read/write, create, delete, rename, and move operations. Move support depends on the selected Android document provider. File transfers through the bridge are limited to 32 MB per file. Android may revoke folder permission after the app is reinstalled or app data is cleared. Android's Storage Access Framework does not expose the same capabilities as a desktop filesystem, and some protected locations cannot be selected.
 
 The bridge does not provide reliable live file-watcher notifications because Storage Access Framework providers vary in their change-notification support. VS Code's built-in editor tabs remain available inside the page, but this app does not create separate native WebView tabs or windows.
 
@@ -108,7 +108,9 @@ Choose **Remote → GitHub Copilot extension** to open the Extensions view insid
 - **Back** navigates WebView history and returns to `vscode.dev` when leaving another page; it does not finish the app.
 - **⌨** focuses Monaco's input area and explicitly requests the Android on-screen keyboard.
 - Scrolling/dragging in the editor dismisses the IME after the gesture; a normal tap on a text input is handled by the editor.
-- **− / + / 100%** change document-level page zoom (content becomes smaller below 100% and larger above 100%); built-in pinch zoom is disabled.
+- **− / + / 100%** change native WebView page scale (content becomes smaller below 100% and larger above 100%); built-in pinch controls are hidden.
+- **Cursor / Ptr** enables a virtual pointer: drag to move, release to click, and use two fingers to scroll. Physical mice use the native WebView pointer path.
+- **Desktop** uses a wide 1280 CSS-pixel viewport without overview auto-shrinking; horizontal and vertical WebView scrolling are enabled.
 - **Desktop** changes the WebView user-agent and viewport width, then reloads the current page. It changes responsive layout but cannot add desktop-only runtime capabilities to the browser.
 
 A real-device test is required before treating local folder editing as production-ready.

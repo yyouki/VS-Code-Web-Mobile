@@ -4,7 +4,10 @@ import android.app.Activity
 import android.app.AlertDialog
 import android.content.Context
 import android.content.Intent
+import android.graphics.Canvas
 import android.graphics.Color
+import android.graphics.Paint
+import android.graphics.Path
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
@@ -13,6 +16,7 @@ import android.os.SystemClock
 import android.text.InputType
 import android.view.View
 import android.view.MotionEvent
+import android.view.PointerIcon
 import android.view.ViewConfiguration
 import android.view.inputmethod.EditorInfo
 import android.view.inputmethod.InputConnection
@@ -39,6 +43,7 @@ import android.webkit.WebView
 import android.webkit.WebViewClient
 import android.widget.Button
 import android.widget.EditText
+import android.widget.FrameLayout
 import android.widget.HorizontalScrollView
 import android.widget.ImageView
 import android.widget.LinearLayout
@@ -64,11 +69,38 @@ import java.util.concurrent.Executors
 private class ModifierAwareWebView(
     context: Context,
     private val modifierProvider: () -> Int,
-    private val onImeShortcut: (Int, Int) -> Unit
+    private val onImeShortcut: (Int, Int) -> Unit,
+    private val onModifierConsumed: () -> Unit
 ) : WebView(context) {
     override fun onCreateInputConnection(outAttrs: EditorInfo): InputConnection? {
         val target = super.onCreateInputConnection(outAttrs) ?: return null
         return object : InputConnectionWrapper(target, true) {
+            override fun sendKeyEvent(event: KeyEvent): Boolean {
+                val modifiers = modifierProvider()
+                if (modifiers == 0 || event.keyCode == KeyEvent.KEYCODE_UNKNOWN) {
+                    return super.sendKeyEvent(event)
+                }
+
+                // Some IMEs send key events rather than committing a text character.
+                val merged = KeyEvent(
+                    event.downTime,
+                    event.eventTime,
+                    event.action,
+                    event.keyCode,
+                    event.repeatCount,
+                    event.metaState or modifiers,
+                    event.deviceId,
+                    event.scanCode,
+                    event.flags,
+                    event.source
+                )
+                val handled = super.sendKeyEvent(merged)
+                if (event.action == KeyEvent.ACTION_UP && event.isPrintingKey) {
+                    this@ModifierAwareWebView.post { onModifierConsumed() }
+                }
+                return handled
+            }
+
             override fun commitText(text: CharSequence?, newCursorPosition: Int): Boolean {
                 val modifiers = modifierProvider()
                 val committed = text?.toString().orEmpty()
@@ -94,7 +126,8 @@ private class ModifierAwareWebView(
         val shift = KeyEvent.META_SHIFT_ON
         if (character in 'a'..'z' || character in 'A'..'Z') {
             val code = KeyEvent.KEYCODE_A + (character.uppercaseChar() - 'A')
-            return code to if (character.isUpperCase()) shift else 0
+            // Gboard may auto-capitalize; do not turn Ctrl+A into Ctrl+Shift+A.
+            return code to 0
         }
         if (character in '0'..'9') {
             return (KeyEvent.KEYCODE_0 + (character - '0')) to 0
@@ -103,8 +136,171 @@ private class ModifierAwareWebView(
     }
 }
 
+/**
+ * Touch-controlled pointer: drag with one finger, release to click, and use two fingers to scroll.
+ */
+private class CursorOverlayView(
+    context: Context,
+    private val target: WebView
+) : View(context) {
+    private val fillPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        color = Color.WHITE
+        style = Paint.Style.FILL
+    }
+    private val outlinePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        color = Color.BLACK
+        style = Paint.Style.STROKE
+        strokeWidth = context.resources.displayMetrics.density * 2f
+    }
+    private val pointerPath = Path()
+    private var cursorX = 0f
+    private var cursorY = 0f
+    private var lastTouchX = 0f
+    private var lastTouchY = 0f
+    private var lastTwoFingerY = 0f
+    private var twoFingerGesture = false
+    private var initialized = false
+
+    init {
+        isClickable = true
+        isFocusable = false
+        setBackgroundColor(Color.TRANSPARENT)
+    }
+
+    override fun onSizeChanged(width: Int, height: Int, oldWidth: Int, oldHeight: Int) {
+        super.onSizeChanged(width, height, oldWidth, oldHeight)
+        if (!initialized && width > 0 && height > 0) {
+            cursorX = width / 2f
+            cursorY = height / 2f
+            initialized = true
+            sendHover()
+        } else {
+            cursorX = cursorX.coerceIn(0f, width.toFloat())
+            cursorY = cursorY.coerceIn(0f, height.toFloat())
+        }
+    }
+
+    override fun onDraw(canvas: Canvas) {
+        super.onDraw(canvas)
+        pointerPath.reset()
+        pointerPath.moveTo(cursorX, cursorY)
+        pointerPath.lineTo(cursorX, cursorY + dp(23))
+        pointerPath.lineTo(cursorX + dp(6), cursorY + dp(17))
+        pointerPath.lineTo(cursorX + dp(11), cursorY + dp(28))
+        pointerPath.lineTo(cursorX + dp(16), cursorY + dp(25))
+        pointerPath.lineTo(cursorX + dp(11), cursorY + dp(14))
+        pointerPath.lineTo(cursorX + dp(20), cursorY + dp(14))
+        pointerPath.close()
+        canvas.drawPath(pointerPath, outlinePaint)
+        canvas.drawPath(pointerPath, fillPaint)
+    }
+
+    override fun onTouchEvent(event: MotionEvent): Boolean {
+        when (event.actionMasked) {
+            MotionEvent.ACTION_DOWN -> {
+                lastTouchX = event.x
+                lastTouchY = event.y
+                lastTwoFingerY = event.y
+                return true
+            }
+            MotionEvent.ACTION_POINTER_DOWN -> {
+                if (event.pointerCount >= 2) {
+                    twoFingerGesture = true
+                    lastTwoFingerY = averagePointerY(event)
+                }
+                return true
+            }
+            MotionEvent.ACTION_MOVE -> {
+                if (event.pointerCount >= 2) {
+                    val nextY = averagePointerY(event)
+                    val delta = nextY - lastTwoFingerY
+                    if (kotlin.math.abs(delta) >= dp(2)) sendWheel(delta, event.eventTime)
+                    lastTwoFingerY = nextY
+                } else {
+                    cursorX = (cursorX + event.x - lastTouchX).coerceIn(0f, width.toFloat())
+                    cursorY = (cursorY + event.y - lastTouchY).coerceIn(0f, height.toFloat())
+                    lastTouchX = event.x
+                    lastTouchY = event.y
+                    sendHover(event.eventTime)
+                    invalidate()
+                }
+                return true
+            }
+            MotionEvent.ACTION_UP -> {
+                if (!twoFingerGesture) {
+                    sendClick(event.eventTime)
+                    performClick()
+                }
+                twoFingerGesture = false
+                return true
+            }
+            MotionEvent.ACTION_CANCEL -> {
+                twoFingerGesture = false
+                return true
+            }
+        }
+        return true
+    }
+
+    override fun performClick(): Boolean {
+        super.performClick()
+        return true
+    }
+
+    private fun averagePointerY(event: MotionEvent): Float {
+        var sum = 0f
+        for (index in 0 until event.pointerCount) sum += event.getY(index)
+        return sum / event.pointerCount.coerceAtLeast(1)
+    }
+
+    private fun sendHover(eventTime: Long = SystemClock.uptimeMillis()) {
+        val event = MotionEvent.obtain(eventTime, eventTime, MotionEvent.ACTION_HOVER_MOVE, cursorX, cursorY, 0)
+        event.source = InputDevice.SOURCE_MOUSE
+        target.dispatchGenericMotionEvent(event)
+        event.recycle()
+    }
+
+    private fun sendWheel(deltaY: Float, eventTime: Long) {
+        val density = resources.displayMetrics.density.coerceAtLeast(1f)
+        val scale = target.scale.takeIf { it > 0f } ?: 1f
+        val cssX = cursorX / density / scale
+        val cssY = cursorY / density / scale
+        val cssDelta = -deltaY / density
+        val script = """
+            (() => {
+              const point = document.elementFromPoint($cssX, $cssY) || document;
+              point.dispatchEvent(new WheelEvent('wheel', {
+                bubbles: true,
+                cancelable: true,
+                deltaX: 0,
+                deltaY: $cssDelta,
+                deltaMode: WheelEvent.DOM_DELTA_PIXEL
+              }));
+            })();
+        """.trimIndent()
+        target.evaluateJavascript(script, null)
+    }
+
+    private fun sendClick(eventTime: Long) {
+        sendHover(eventTime)
+        val down = MotionEvent.obtain(eventTime, eventTime, MotionEvent.ACTION_DOWN, cursorX, cursorY, 0)
+        down.source = InputDevice.SOURCE_MOUSE
+        target.dispatchTouchEvent(down)
+        down.recycle()
+
+        val up = MotionEvent.obtain(eventTime, eventTime + 1, MotionEvent.ACTION_UP, cursorX, cursorY, 0)
+        up.source = InputDevice.SOURCE_MOUSE
+        target.dispatchTouchEvent(up)
+        up.recycle()
+    }
+
+    private fun dp(value: Int): Float = value * resources.displayMetrics.density
+}
+
 class MainActivity : Activity() {
     private lateinit var editor: ModifierAwareWebView
+    private lateinit var editorContainer: FrameLayout
+    private lateinit var cursorOverlay: CursorOverlayView
     private lateinit var keyboardBar: HorizontalScrollView
     private lateinit var loadingProgressBar: ProgressBar
     private val modifierButtons = mutableMapOf<Int, Button>()
@@ -129,8 +325,11 @@ class MainActivity : Activity() {
     private var desktopMode = false
     private var pageZoom = 1.0f
     private var keyBarVisible = true
+    private var cursorModeEnabled = false
     private var zoomLabelButton: Button? = null
     private var desktopModeButton: Button? = null
+    private var cursorModeButton: Button? = null
+    private var headerCursorButton: Button? = null
     private var backInvokedCallback: OnBackInvokedCallback? = null
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -210,6 +409,8 @@ class MainActivity : Activity() {
 
         header.addView(makeHeaderButton("Folder") { openFolderFromToolbar() })
         header.addView(makeHeaderButton("Remote") { showRemoteDialog() })
+        headerCursorButton = makeHeaderButton("Ptr") { toggleCursorMode() }
+        header.addView(headerCursorButton)
         header.addView(makeHeaderButton("Keys") { toggleKeyboardBar() })
         header.addView(makeHeaderButton("Info") { showAboutDialog() })
         root.addView(
@@ -238,6 +439,10 @@ class MainActivity : Activity() {
             onImeShortcut = { keyCode, modifiers ->
                 activeModifiers = modifiers
                 sendKey(keyCode)
+            },
+            onModifierConsumed = {
+                activeModifiers = 0
+                syncModifierButtons()
             }
         ).apply {
             setLayerType(View.LAYER_TYPE_HARDWARE, null)
@@ -252,12 +457,16 @@ class MainActivity : Activity() {
             settings.allowContentAccess = true // SAF returns content:// URIs for selected Android files.
             settings.javaScriptCanOpenWindowsAutomatically = true
             settings.setSupportMultipleWindows(true)
-            // Zoom is controlled with CSS page zoom; native WebView pinch gestures remain disabled.
-            settings.setSupportZoom(false)
+            // Support viewport-aware zoomBy while hiding Android's built-in pinch/zoom controls.
+            settings.setSupportZoom(true)
             settings.builtInZoomControls = false
             settings.displayZoomControls = false
             settings.useWideViewPort = true
-            settings.loadWithOverviewMode = desktopMode
+            // Keep desktop page width intact so it can be panned instead of auto-shrunk/clipped.
+            settings.loadWithOverviewMode = false
+            isHorizontalScrollBarEnabled = true
+            isVerticalScrollBarEnabled = true
+            pointerIcon = PointerIcon.getSystemIcon(this@MainActivity, PointerIcon.TYPE_ARROW)
             settings.cacheMode = android.webkit.WebSettings.LOAD_DEFAULT
             settings.textZoom = 100
             originalUserAgent = settings.userAgentString
@@ -379,8 +588,26 @@ class MainActivity : Activity() {
             setAcceptThirdPartyCookies(editor, true)
         }
 
-        root.addView(
+        editorContainer = FrameLayout(this)
+        editorContainer.addView(
             editor,
+            FrameLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.MATCH_PARENT
+            )
+        )
+        cursorOverlay = CursorOverlayView(this, editor).apply {
+            visibility = View.GONE
+        }
+        editorContainer.addView(
+            cursorOverlay,
+            FrameLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.MATCH_PARENT
+            )
+        )
+        root.addView(
+            editorContainer,
             LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT,
                 0,
@@ -406,6 +633,10 @@ class MainActivity : Activity() {
             setOnClickListener { toggleDesktopMode() }
         }
         rowContent(keyboardBar).addView(desktopModeButton)
+        cursorModeButton = makeKeyButton("Cursor OFF").apply {
+            setOnClickListener { toggleCursorMode() }
+        }
+        rowContent(keyboardBar).addView(cursorModeButton)
 
         addModifierButton(keyboardBar, "CTRL", KeyEvent.META_CTRL_ON)
         addModifierButton(keyboardBar, "ALT", KeyEvent.META_ALT_ON)
@@ -607,13 +838,13 @@ class MainActivity : Activity() {
 
         pageZoom = nextZoom
         persistPageZoom()
-        if (::editor.isInitialized) applyPagePresentation(editor)
+        applyNativePageZoom()
     }
 
     private fun resetPageZoom() {
         pageZoom = 1.0f
         persistPageZoom()
-        if (::editor.isInitialized) applyPagePresentation(editor)
+        applyNativePageZoom()
     }
 
     private fun persistPageZoom() {
@@ -625,38 +856,51 @@ class MainActivity : Activity() {
     }
 
     /**
-     * Apply actual document zoom instead of WebView.zoomBy(), which is ignored by
-     * pages that lock the viewport (as vscode.dev does).
+     * Apply browser-style page scale with WebView.zoomBy. CSS zoom had left
+     * the editor occupying only part of the screen below 100%.
      */
+    private fun applyNativePageZoom(view: WebView = editor) {
+        if (view.width <= 0 || view.height <= 0) return
+        view.post {
+            val currentScale = view.scale.takeIf { it > 0f } ?: 1f
+            val factor = (pageZoom / currentScale).coerceIn(0.25f, 4f)
+            if (kotlin.math.abs(factor - 1f) > 0.01f) {
+                runCatching { view.zoomBy(factor) }
+            }
+            zoomLabelButton?.text = "${(pageZoom * 100).toInt()}%"
+        }
+    }
+
     private fun applyPagePresentation(view: WebView) {
         val isDesktop = desktopMode
-        val zoom = pageZoom
+        val viewport = if (isDesktop) {
+            "width=1280, initial-scale=1.0, maximum-scale=5.0, user-scalable=yes"
+        } else {
+            "width=device-width, initial-scale=1.0, maximum-scale=5.0, user-scalable=yes"
+        }
+        val viewportJson = JSONObject.quote(viewport)
         val script = """
             (() => {
-              const desktop = $isDesktop;
-              const zoom = $zoom;
-              let viewport = document.querySelector('meta[name="viewport"]');
-              if (!viewport) {
-                viewport = document.createElement('meta');
-                viewport.name = 'viewport';
-                document.head.appendChild(viewport);
+              let meta = document.querySelector('meta[name="viewport"]');
+              if (!meta) {
+                meta = document.createElement('meta');
+                meta.name = 'viewport';
+                document.head.appendChild(meta);
               }
-              viewport.setAttribute(
-                'content',
-                desktop
-                  ? 'width=1280, initial-scale=1.0, maximum-scale=5.0, user-scalable=yes'
-                  : 'width=device-width, initial-scale=1.0, maximum-scale=5.0, user-scalable=yes'
-              );
-              document.documentElement.style.setProperty('zoom', String(zoom), 'important');
-              document.documentElement.style.setProperty('transform-origin', 'top left');
-              window.__androidPageZoom = zoom;
-              window.__androidDesktopViewport = desktop;
+              meta.setAttribute('content', $viewportJson);
+              // Remove the old CSS transform so the native page scale owns zoom.
+              document.documentElement.style.removeProperty('zoom');
+              document.documentElement.style.removeProperty('transform-origin');
+              if (document.body) {
+                document.body.style.removeProperty('zoom');
+                document.body.style.removeProperty('transform-origin');
+              }
+              window.dispatchEvent(new Event('resize'));
+              window.__androidDesktopViewport = $isDesktop;
             })();
         """.trimIndent()
-        view.post {
-            if (!isFinishing && !isDestroyed) {
-                view.evaluateJavascript(script, null)
-            }
+        view.evaluateJavascript(script) {
+            applyNativePageZoom(view)
         }
         zoomLabelButton?.text = "${(pageZoom * 100).toInt()}%"
         desktopModeButton?.text = if (desktopMode) "Desktop ✓" else "Desktop"
@@ -683,8 +927,9 @@ class MainActivity : Activity() {
         editor.settings.userAgentString =
             if (desktopMode) asDesktopUserAgent(userAgent) else userAgent
         editor.settings.useWideViewPort = true
-        editor.settings.loadWithOverviewMode = desktopMode
-        editor.settings.setSupportZoom(false)
+        // Desktop mode keeps a fixed-width canvas that the user can pan around.
+        editor.settings.loadWithOverviewMode = false
+        editor.settings.setSupportZoom(true)
         desktopModeButton?.text = if (desktopMode) "Desktop ✓" else "Desktop"
 
         val currentUrl = editor.url
@@ -814,6 +1059,22 @@ class MainActivity : Activity() {
         val button = makeKeyButton(label)
         button.setOnClickListener { onClick() }
         rowContent(row).addView(button)
+    }
+
+    private fun toggleCursorMode() {
+        cursorModeEnabled = !cursorModeEnabled
+        cursorOverlay.visibility = if (cursorModeEnabled) View.VISIBLE else View.GONE
+        cursorModeButton?.text = if (cursorModeEnabled) "Cursor ON" else "Cursor OFF"
+        headerCursorButton?.text = if (cursorModeEnabled) "Ptr ✓" else "Ptr"
+        Toast.makeText(
+            this,
+            if (cursorModeEnabled) {
+                "Pointer mode: drag one finger to move, release to click, use two fingers to scroll."
+            } else {
+                "Pointer mode disabled. Normal touch and physical mouse input are active."
+            },
+            Toast.LENGTH_LONG
+        ).show()
     }
 
     private fun showInternalKeyboard() {
