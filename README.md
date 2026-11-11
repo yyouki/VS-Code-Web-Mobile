@@ -7,26 +7,22 @@ An independent Android wrapper for the official Visual Studio Code web editor at
 - Android WebView that opens VS Code for the Web.
 - Immersive layout: the status bar is hidden, the navigation bar remains available, and a swipe from the top temporarily reveals system bars.
 - Display-cutout/notch support with safe insets for app controls.
-- Dedicated **⌨** control to request the Android keyboard, WebView zoom in/out/reset, and mobile/desktop user-agent modes.
+- Dedicated **⌨** control, CTRL/ALT/SHIFT/META latch handling for Android IME text commits, CSS-based page zoom in/out/reset, and mobile/desktop viewport modes.
 - One horizontally scrollable, hideable key strip containing the keyboard control, CTRL, ALT, SHIFT, META, ESC, TAB, function keys, navigation keys, and programming symbols.
 - Editor scrolling gestures dismiss the on-screen keyboard without intentionally clearing editor focus; a normal tap on a text input is left to VS Code/WebView to request the keyboard.
 - Modifier indicators mirror key states observed by the editor from the Android/physical keyboard.
-- Remote menu shortcuts for GitHub repositories, VS Code Remote Tunnels, GitHub Codespaces, and the GitHub Copilot Marketplace page.
-- Android WebView supports GitHub sign-in popup windows and shared WebView cookies; OAuth compatibility still depends on the provider and Android WebView.
+- Remote menu entry points for the VS Code Command Palette, GitHub Codespaces, and the GitHub Copilot Extensions view.
+- Android WebView supports sign-in popup windows and shared cookies. OAuth compatibility still depends on the provider and Android WebView.
 - Android Storage Access Framework is invoked when VS Code requests Open Folder or Open File; the last selected folder permission is remembered.
 - A compatibility layer for common File System Access API operations, including rename and provider-dependent move support.
-- Android file picker support for web editor uploads.
+- Android file picker support for web editor uploads and SAF `content://` URI access.
 - An original app icon. The official Visual Studio Code logo appears only as a link to the official website.
 
 ## Open a folder from Android storage
 
-1. Tap **Open Folder** in the app header.
-2. Choose a folder in Android's system folder picker.
-3. Return to the editor.
-4. In the editor, choose **File → Open Folder**. The app passes the selected folder handle to the editor.
-5. To switch projects, repeat these steps.
+Use **File → Open Folder** inside VS Code. The app opens Android's system folder picker and returns a compatible folder handle to the editor. The **Folder** button in the app header remains an alternative for preselecting a folder.
 
-The selected folder permission is retained by Android. When you choose **File → Open Folder** inside VS Code, the app opens Android's system folder picker directly. After the app or editor page reloads, the bridge preselects the last folder again. You can also choose **Open Folder** in the native header. Document-provider failures are caught and reported rather than allowed to crash the activity.
+The selected folder permission is retained by Android when the provider grants persistable access. When you choose **File → Open Folder** inside VS Code, the app opens Android's system folder picker directly. After the app or editor page reloads, the bridge can restore the selected folder. Document-provider errors are caught and reported instead of being allowed to terminate the activity.
 
 Android grants access only to the folder selected by the user and its descendants. Android 11 and later restrict selection of certain protected locations, including storage roots, Download, Android/data, and Android/obb.
 
@@ -38,7 +34,7 @@ Install JDK 21, Android SDK Platform 36, and Gradle 9.5.0.
 
 Debug APK output: app/build/outputs/apk/debug/app-debug.apk
 
-    gradle --no-daemon -PappVersion=0.5.0 :app:assembleRelease
+    gradle --no-daemon -PappVersion=0.5.1 :app:assembleRelease
 
 Release APK output: app/build/outputs/apk/release/app-release.apk
 
@@ -86,9 +82,7 @@ Settings Sync is handled by VS Code itself; there is no separate native Sync but
 
 ## GitHub repositories and Remote Tunnels
 
-Open **Remote** in the app header, then choose **Open GitHub repository** and enter `owner/repository`. The app navigates to `https://vscode.dev/github/owner/repository`.
-
-To use **Connect to VS Code Tunnel**, first start a tunnel on another computer that has VS Code and the Remote Tunnels support installed. Paste the full `https://vscode.dev/tunnel/<machine>/<folder>` URL printed by that computer. The remote computer must remain online with the tunnel running.
+These actions are intentionally initiated inside VS Code, not through an APK-specific repository or tunnel form. Open the VS Code Command Palette with **Ctrl+Shift+P**. To open a repository, run **GitHub Repositories: Open Repository...** (the GitHub Repositories extension may need to be installed first). To connect to a machine that is already hosting a tunnel, run **Remote Tunnels: Connect to Tunnel**. The VS Code documentation describes these commands and requirements: https://code.visualstudio.com/docs/remote/vscode-web and https://code.visualstudio.com/docs/remote/tunnels/.
 
 ## GitHub Codespaces terminal
 
@@ -114,8 +108,8 @@ Choose **Remote → GitHub Copilot extension** to open the Extensions view insid
 - **Back** navigates WebView history and returns to `vscode.dev` when leaving another page; it does not finish the app.
 - **⌨** focuses Monaco's input area and explicitly requests the Android on-screen keyboard.
 - Scrolling/dragging in the editor dismisses the IME after the gesture; a normal tap on a text input is handled by the editor.
-- **− / + / 100%** control programmatic WebView zoom; built-in pinch zoom is disabled.
-- **Desktop** changes the WebView user-agent and reloads the current page. A desktop user-agent cannot add desktop-only runtime capabilities to the browser.
+- **− / + / 100%** change document-level page zoom (content becomes smaller below 100% and larger above 100%); built-in pinch zoom is disabled.
+- **Desktop** changes the WebView user-agent and viewport width, then reloads the current page. It changes responsive layout but cannot add desktop-only runtime capabilities to the browser.
 
 A real-device test is required before treating local folder editing as production-ready.
 
