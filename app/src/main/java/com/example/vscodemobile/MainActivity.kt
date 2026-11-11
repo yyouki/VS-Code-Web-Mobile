@@ -1345,6 +1345,7 @@ class MainActivity : Activity() {
         val resolutions = listOf(
             Triple(0, 0, defaultResolutionLabel),
             Triple(1280, 720, "1280 × 720"),
+            Triple(1366, 768, "1366 × 768"),
             Triple(1600, 900, "1600 × 900"),
             Triple(1920, 1080, "1920 × 1080"),
             Triple(2560, 1440, "2560 × 1440")
