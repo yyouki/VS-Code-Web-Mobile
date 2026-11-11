@@ -7,6 +7,7 @@ import android.graphics.Color
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
+import android.os.Message
 import android.os.SystemClock
 import android.provider.DocumentsContract
 import android.util.Base64
@@ -15,12 +16,14 @@ import android.view.InputDevice
 import android.view.KeyEvent
 import android.view.ViewGroup
 import android.view.WindowManager
+import android.webkit.CookieManager
 import android.webkit.ValueCallback
 import android.webkit.WebChromeClient
 import androidx.webkit.WebMessageCompat
 import android.webkit.WebResourceRequest
 import android.webkit.WebView
 import android.webkit.WebViewClient
+import android.view.inputmethod.InputMethodManager
 import android.widget.Button
 import android.widget.HorizontalScrollView
 import android.widget.ImageView
@@ -53,6 +56,13 @@ class MainActivity : Activity() {
     private var pendingBridgePicker: PendingPicker? = null
     private var pendingFileChooser: ValueCallback<Array<Uri>>? = null
     private var selectedTreeUri: Uri? = null
+    private var authPopupDialog: AlertDialog? = null
+    private var authPopupWebView: WebView? = null
+    private var originalUserAgent: String? = null
+    private var desktopMode = false
+    private var pageZoom = 1.0f
+    private var zoomLabelButton: Button? = null
+    private var desktopModeButton: Button? = null
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -70,9 +80,10 @@ class MainActivity : Activity() {
         }
         enableImmersiveStatusBar()
 
-        selectedTreeUri = getSharedPreferences(PREFERENCES, MODE_PRIVATE)
-            .getString(KEY_TREE_URI, null)
+        val preferences = getSharedPreferences(PREFERENCES, MODE_PRIVATE)
+        selectedTreeUri = preferences.getString(KEY_TREE_URI, null)
             ?.let { runCatching { Uri.parse(it) }.getOrNull() }
+        desktopMode = preferences.getBoolean(KEY_DESKTOP_MODE, false)
 
         window.setSoftInputMode(WindowManager.LayoutParams.SOFT_INPUT_ADJUST_RESIZE)
         window.statusBarColor = Color.rgb(30, 30, 30)
@@ -139,8 +150,17 @@ class MainActivity : Activity() {
             settings.databaseEnabled = true
             settings.allowFileAccess = false
             settings.allowContentAccess = false
-            settings.javaScriptCanOpenWindowsAutomatically = false
-            settings.setSupportMultipleWindows(false)
+            settings.javaScriptCanOpenWindowsAutomatically = true
+            settings.setSupportMultipleWindows(true)
+            settings.setSupportZoom(false) // Zoom is controlled by dedicated toolbar buttons.
+            settings.builtInZoomControls = false
+            settings.displayZoomControls = false
+            settings.useWideViewPort = true
+            settings.loadWithOverviewMode = desktopMode
+            originalUserAgent = settings.userAgentString
+            if (desktopMode) {
+                settings.userAgentString = asDesktopUserAgent(originalUserAgent.orEmpty())
+            }
             settings.mixedContentMode = android.webkit.WebSettings.MIXED_CONTENT_NEVER_ALLOW
 
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
@@ -166,6 +186,19 @@ class MainActivity : Activity() {
             }
 
             webChromeClient = object : WebChromeClient() {
+                override fun onCreateWindow(
+                    view: WebView,
+                    isDialog: Boolean,
+                    isUserGesture: Boolean,
+                    resultMsg: Message
+                ): Boolean {
+                    return showAuthenticationPopup(resultMsg)
+                }
+
+                override fun onCloseWindow(window: WebView) {
+                    if (window === authPopupWebView) closeAuthenticationPopup()
+                }
+
                 override fun onShowFileChooser(
                     webView: WebView,
                     filePathCallback: ValueCallback<Array<Uri>>,
@@ -200,6 +233,11 @@ class MainActivity : Activity() {
             }
         }
 
+        CookieManager.getInstance().apply {
+            setAcceptCookie(true)
+            setAcceptThirdPartyCookies(editor, true)
+        }
+
         root.addView(
             editor,
             LinearLayout.LayoutParams(
@@ -214,6 +252,20 @@ class MainActivity : Activity() {
             setBackgroundColor(Color.rgb(37, 37, 38))
             setPadding(dp(3), dp(3), dp(3), dp(3))
         }
+
+        val controlRow = createKeyRow()
+        addControlButton(controlRow, "⌨") { showInternalKeyboard() }
+        addControlButton(controlRow, "−") { changePageZoom(-ZOOM_STEP) }
+        zoomLabelButton = makeKeyButton("100%").apply {
+            setOnClickListener { resetPageZoom() }
+        }
+        rowContent(controlRow).addView(zoomLabelButton)
+        addControlButton(controlRow, "+") { changePageZoom(ZOOM_STEP) }
+        desktopModeButton = makeKeyButton(if (desktopMode) "Desktop ✓" else "Desktop").apply {
+            setOnClickListener { toggleDesktopMode() }
+        }
+        rowContent(controlRow).addView(desktopModeButton)
+        addControlButton(controlRow, "Codespaces") { openCodespaces() }
 
         val firstRow = createKeyRow()
         addModifierButton(firstRow, "CTRL", KeyEvent.META_CTRL_ON)
@@ -239,6 +291,7 @@ class MainActivity : Activity() {
         addKeyButton(secondRow, "END", KeyEvent.KEYCODE_MOVE_END)
         addKeyButton(secondRow, "DEL", KeyEvent.KEYCODE_DEL)
 
+        keyboardBar.addView(controlRow)
         keyboardBar.addView(firstRow)
         keyboardBar.addView(secondRow)
         root.addView(
