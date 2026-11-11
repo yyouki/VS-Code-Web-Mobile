@@ -110,11 +110,12 @@ class MainActivity : Activity() {
                     WindowInsetsCompat.Type.displayCutout() or
                         WindowInsetsCompat.Type.navigationBars()
                 )
+                val imeInsets = insets.getInsets(WindowInsetsCompat.Type.ime())
                 view.setPadding(
                     safeInsets.left,
                     safeInsets.top,
                     safeInsets.right,
-                    safeInsets.bottom
+                    maxOf(safeInsets.bottom, imeInsets.bottom)
                 )
                 insets
             }
