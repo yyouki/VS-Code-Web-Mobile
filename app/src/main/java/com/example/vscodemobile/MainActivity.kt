@@ -640,7 +640,11 @@ class MainActivity : Activity() {
         editor.loadUrl(COPILOT_EXTENSION_URL)
     }
 
-    private fun makeHeaderButton(label: String, onClick: () -> Unit): Button {
+    private fun addControlButton(
+        row: HorizontalScrollView,
+        label: String,
+        onClick: () -> Unit
+    ) {
         val button = makeKeyButton(label)
         button.setOnClickListener { onClick() }
         rowContent(row).addView(button)
@@ -650,11 +654,13 @@ class MainActivity : Activity() {
         editor.requestFocusFromTouch()
         val focusScript = """
             (function () {
-              const input = document.querySelector(
+              const editorInput = document.querySelector(
                 ".monaco-editor textarea.inputarea, .monaco-editor textarea"
               );
-              if (input) input.focus();
-              else if (document.activeElement) document.activeElement.focus();
+              if (editorInput) {
+                editorInput.focus();
+                editorInput.click();
+              }
             })();
         """.trimIndent()
 
@@ -666,78 +672,8 @@ class MainActivity : Activity() {
                     editor,
                     InputMethodManager.SHOW_IMPLICIT
                 )
-            }, 120)
+            }, 150)
         }
-    }
-
-    private fun changePageZoom(delta: Float) {
-        val nextZoom = (pageZoom + delta).coerceIn(MIN_PAGE_ZOOM, MAX_PAGE_ZOOM)
-        if (nextZoom == pageZoom) return
-
-        editor.zoomBy(nextZoom / pageZoom)
-        pageZoom = nextZoom
-        zoomLabelButton?.text = "${(pageZoom * 100).toInt()}%"
-    }
-
-    private fun resetPageZoom() {
-        if (pageZoom != 1.0f) {
-            editor.zoomBy(1.0f / pageZoom)
-            pageZoom = 1.0f
-        }
-        zoomLabelButton?.text = "100%"
-    }
-
-    private fun asDesktopUserAgent(userAgent: String): String {
-        return userAgent
-            .replace(Regex("\\s\\(Linux; Android [^)]*\\)"), " (X11; Linux x86_64)")
-            .replace(" Mobile", "")
-            .replace("; wv", "")
-    }
-
-    private fun toggleDesktopMode() {
-        desktopMode = !desktopMode
-        getSharedPreferences(PREFERENCES, MODE_PRIVATE)
-            .edit()
-            .putBoolean(KEY_DESKTOP_MODE, desktopMode)
-            .apply()
-
-        val userAgent = originalUserAgent ?: editor.settings.userAgentString
-        editor.settings.userAgentString =
-            if (desktopMode) asDesktopUserAgent(userAgent) else userAgent
-        editor.settings.useWideViewPort = true
-        editor.settings.loadWithOverviewMode = desktopMode
-        desktopModeButton?.text = if (desktopMode) "Desktop ✓" else "Desktop"
-
-        val currentUrl = editor.url
-            ?.takeIf { Uri.parse(it).scheme == "https" }
-            ?: VSCODE_WEB_URL
-        editor.loadUrl(currentUrl)
-        Toast.makeText(
-            this,
-            if (desktopMode) "Desktop site enabled. Reloading the editor." else "Mobile site enabled.",
-            Toast.LENGTH_SHORT
-        ).show()
-    }
-
-    private fun openCodespaces() {
-        editor.loadUrl(CODESPACES_URL)
-        Toast.makeText(
-            this,
-            "Sign in to GitHub, then create or open a Codespace. Its remote environment provides the terminal.",
-            Toast.LENGTH_LONG
-        ).show()
-    }
-
-    private fun showSyncHelp() {
-        AlertDialog.Builder(this)
-            .setTitle("Backup & Sync")
-            .setMessage(
-                "In VS Code, open the Manage gear menu or Accounts menu, choose " +
-                    "Backup and Sync Settings, select what to sync, then sign in with GitHub. " +
-                    "Authentication popups are enabled in this app."
-            )
-            .setPositiveButton("Got it", null)
-            .show()
     }
 
     private fun makeHeaderButton(label: String, onClick: () -> Unit): Button {
