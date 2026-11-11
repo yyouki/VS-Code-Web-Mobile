@@ -1586,9 +1586,12 @@ class MainActivity : Activity() {
         private const val VSCODE_WEB_URL = "https://vscode.dev/"
         private const val VSCODE_ORIGIN = "https://vscode.dev"
         private const val CODESPACES_URL = "https://github.com/codespaces"
+        private const val COPILOT_EXTENSION_URL = "https://marketplace.visualstudio.com/items?itemName=GitHub.copilot"
         private const val PREFERENCES = "local_workspace"
         private const val KEY_TREE_URI = "selected_tree_uri"
         private const val KEY_DESKTOP_MODE = "desktop_mode"
+        private const val KEY_PAGE_ZOOM = "page_zoom"
+        private const val KEY_KEYBAR_VISIBLE = "keybar_visible"
         private const val ZOOM_STEP = 0.1f
         private const val MIN_PAGE_ZOOM = 0.6f
         private const val MAX_PAGE_ZOOM = 2.0f
