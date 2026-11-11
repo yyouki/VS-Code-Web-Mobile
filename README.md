@@ -7,12 +7,12 @@ An independent Android wrapper for the official Visual Studio Code web editor at
 - Android WebView that opens VS Code for the Web.
 - Immersive layout: the status bar is hidden, the navigation bar remains available, and a swipe from the top temporarily reveals system bars.
 - Display-cutout/notch support with safe insets for app controls.
-- Dedicated **⌨** control, modifier-aware Android IME and hardware-key event handling, native WebView page zoom in/out/reset, and mobile/desktop viewport modes.
-- One horizontally scrollable, hideable key strip containing keyboard control, zoom, desktop mode, optional cursor, CTRL, ALT, SHIFT, META, ESC, TAB, function keys, navigation keys, and programming symbols.
+- Dedicated **⌨** control, modifier-aware Android IME and hardware-key event handling, native WebView zoom buttons plus pinch-to-zoom, and mobile/desktop viewport modes.
+- One horizontally scrollable, hideable key strip containing keyboard control, zoom, desktop mode, optional configurable pointer, CTRL, ALT, SHIFT, META, ESC, TAB, function keys, navigation keys, and programming symbols.
 - Editor scrolling gestures dismiss the on-screen keyboard without intentionally clearing editor focus; a normal tap on a text input is left to VS Code/WebView to request the keyboard.
 - Modifier indicators mirror key states observed by the editor from the Android/physical keyboard.
 - Remote menu entry points for the VS Code Command Palette, GitHub Codespaces, and the GitHub Copilot Extensions view.
-- Android WebView supports sign-in popup windows and shared cookies. OAuth compatibility still depends on the provider and Android WebView.
+- External HTTPS pages, including GitHub and Microsoft authentication pages, open in Android's default browser. The VS Code web editor and Codespaces workspaces stay inside the app. Authentication completion must be verified on the target device because Chrome and WebView use separate cookie stores.
 - Android Storage Access Framework is invoked when VS Code requests Open Folder or Open File. Bridge objects inherit the FileSystem Access handle prototypes expected by VS Code's HTML file provider.
 - A compatibility layer for common File System Access API operations, including rename and provider-dependent move support.
 - Android file picker support for web editor uploads and SAF `content://` URI access.
@@ -34,7 +34,7 @@ Install JDK 21, Android SDK Platform 36, and Gradle 9.5.0.
 
 Debug APK output: app/build/outputs/apk/debug/app-debug.apk
 
-    gradle --no-daemon -PappVersion=0.5.2 :app:assembleRelease
+    gradle --no-daemon -PappVersion=0.5.3 :app:assembleRelease
 
 Release APK output: app/build/outputs/apk/release/app-release.apk
 
@@ -108,7 +108,9 @@ Choose **Remote → GitHub Copilot extension** to open the Extensions view insid
 - **Back** navigates WebView history and returns to `vscode.dev` when leaving another page; it does not finish the app.
 - **⌨** focuses Monaco's input area and explicitly requests the Android on-screen keyboard.
 - Scrolling/dragging in the editor dismisses the IME after the gesture; a normal tap on a text input is handled by the editor.
-- **− / + / 100%** change native WebView page scale (content becomes smaller below 100% and larger above 100%); built-in pinch controls are hidden.
+- **− / + / 100%** change native WebView page scale (content becomes smaller below 100% and larger above 100%); pinch-to-zoom is enabled while on-screen zoom buttons are hidden.
+- **Ptr** toggles a desktop-style pointer. Long-press **Ptr** to configure speed, size, and color. Drag to move the pointer, tap to click, use two fingers to scroll, and pinch to zoom while pointer mode is active.
+- In desktop mode, the page uses a wide viewport; touch panning and pinch zoom are handled by WebView.
 - **Cursor / Ptr** enables a virtual pointer: drag to move, release to click, and use two fingers to scroll. Physical mice use the native WebView pointer path.
 - **Desktop** uses a wide 1280 CSS-pixel viewport without overview auto-shrinking; horizontal and vertical WebView scrolling are enabled.
 - **Desktop** changes the WebView user-agent and viewport width, then reloads the current page. It changes responsive layout but cannot add desktop-only runtime capabilities to the browser.

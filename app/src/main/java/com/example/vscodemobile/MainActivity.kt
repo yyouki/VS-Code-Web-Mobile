@@ -17,6 +17,7 @@ import android.text.InputType
 import android.view.View
 import android.view.MotionEvent
 import android.view.PointerIcon
+import android.view.ScaleGestureDetector
 import android.view.ViewConfiguration
 import android.view.inputmethod.EditorInfo
 import android.view.inputmethod.InputConnection
@@ -48,6 +49,9 @@ import android.widget.HorizontalScrollView
 import android.widget.ImageView
 import android.widget.LinearLayout
 import android.widget.ProgressBar
+import android.widget.RadioButton
+import android.widget.RadioGroup
+import android.widget.SeekBar
 import android.widget.TextView
 import android.widget.Toast
 import androidx.core.view.ViewCompat
@@ -137,11 +141,13 @@ private class ModifierAwareWebView(
 }
 
 /**
- * Touch-controlled pointer: drag with one finger, release to click, and use two fingers to scroll.
+ * Touchpad-style pointer. One finger moves the cursor; a tap clicks;
+ * two fingers scroll; a pinch changes page zoom.
  */
 private class CursorOverlayView(
     context: Context,
-    private val target: WebView
+    private val target: WebView,
+    private val onPinchZoom: (Float) -> Unit
 ) : View(context) {
     private val fillPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
         color = Color.WHITE
@@ -150,21 +156,44 @@ private class CursorOverlayView(
     private val outlinePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
         color = Color.BLACK
         style = Paint.Style.STROKE
-        strokeWidth = context.resources.displayMetrics.density * 2f
+        strokeWidth = context.resources.displayMetrics.density * 1.6f
+        strokeJoin = Paint.Join.ROUND
     }
     private val pointerPath = Path()
     private var cursorX = 0f
     private var cursorY = 0f
     private var lastTouchX = 0f
     private var lastTouchY = 0f
+    private var lastTwoFingerX = 0f
     private var lastTwoFingerY = 0f
     private var twoFingerGesture = false
+    private var cursorMoved = false
     private var initialized = false
+    private var speed = 1.35f
+    private var pointerSizeDp = 28
+
+    private val scaleDetector = ScaleGestureDetector(
+        context,
+        object : ScaleGestureDetector.SimpleOnScaleGestureListener() {
+            override fun onScale(detector: ScaleGestureDetector): Boolean {
+                val factor = detector.scaleFactor.coerceIn(0.85f, 1.18f)
+                if (kotlin.math.abs(factor - 1f) > 0.005f) onPinchZoom(factor)
+                return true
+            }
+        }
+    )
 
     init {
         isClickable = true
         isFocusable = false
         setBackgroundColor(Color.TRANSPARENT)
+    }
+
+    fun updateSettings(pointerSize: Int, pointerSpeed: Float, color: Int) {
+        pointerSizeDp = pointerSize.coerceIn(16, 48)
+        speed = pointerSpeed.coerceIn(0.5f, 3.0f)
+        fillPaint.color = color
+        invalidate()
     }
 
     override fun onSizeChanged(width: Int, height: Int, oldWidth: Int, oldHeight: Int) {
@@ -182,43 +211,60 @@ private class CursorOverlayView(
 
     override fun onDraw(canvas: Canvas) {
         super.onDraw(canvas)
+        val size = dp(pointerSizeDp)
         pointerPath.reset()
+        // Classic desktop arrow silhouette, scaled from the user's cursor-size setting.
         pointerPath.moveTo(cursorX, cursorY)
-        pointerPath.lineTo(cursorX, cursorY + dp(23))
-        pointerPath.lineTo(cursorX + dp(6), cursorY + dp(17))
-        pointerPath.lineTo(cursorX + dp(11), cursorY + dp(28))
-        pointerPath.lineTo(cursorX + dp(16), cursorY + dp(25))
-        pointerPath.lineTo(cursorX + dp(11), cursorY + dp(14))
-        pointerPath.lineTo(cursorX + dp(20), cursorY + dp(14))
+        pointerPath.lineTo(cursorX, cursorY + size * 1.02f)
+        pointerPath.lineTo(cursorX + size * 0.25f, cursorY + size * 0.78f)
+        pointerPath.lineTo(cursorX + size * 0.46f, cursorY + size * 1.18f)
+        pointerPath.lineTo(cursorX + size * 0.63f, cursorY + size * 1.08f)
+        pointerPath.lineTo(cursorX + size * 0.43f, cursorY + size * 0.68f)
+        pointerPath.lineTo(cursorX + size * 0.82f, cursorY + size * 0.68f)
         pointerPath.close()
         canvas.drawPath(pointerPath, outlinePaint)
         canvas.drawPath(pointerPath, fillPaint)
     }
 
     override fun onTouchEvent(event: MotionEvent): Boolean {
+        scaleDetector.onTouchEvent(event)
         when (event.actionMasked) {
             MotionEvent.ACTION_DOWN -> {
                 lastTouchX = event.x
                 lastTouchY = event.y
-                lastTwoFingerY = event.y
+                cursorMoved = false
+                twoFingerGesture = false
                 return true
             }
             MotionEvent.ACTION_POINTER_DOWN -> {
                 if (event.pointerCount >= 2) {
                     twoFingerGesture = true
+                    lastTwoFingerX = averagePointerX(event)
                     lastTwoFingerY = averagePointerY(event)
                 }
                 return true
             }
             MotionEvent.ACTION_MOVE -> {
                 if (event.pointerCount >= 2) {
+                    val nextX = averagePointerX(event)
                     val nextY = averagePointerY(event)
-                    val delta = nextY - lastTwoFingerY
-                    if (kotlin.math.abs(delta) >= dp(2)) sendWheel(delta, event.eventTime)
+                    if (!scaleDetector.isInProgress) {
+                        val deltaX = nextX - lastTwoFingerX
+                        val deltaY = nextY - lastTwoFingerY
+                        if (kotlin.math.abs(deltaX) >= dp(2) || kotlin.math.abs(deltaY) >= dp(2)) {
+                            sendWheel(deltaX, deltaY)
+                        }
+                    }
+                    lastTwoFingerX = nextX
                     lastTwoFingerY = nextY
-                } else {
-                    cursorX = (cursorX + event.x - lastTouchX).coerceIn(0f, width.toFloat())
-                    cursorY = (cursorY + event.y - lastTouchY).coerceIn(0f, height.toFloat())
+                } else if (!twoFingerGesture) {
+                    val dx = (event.x - lastTouchX) * speed
+                    val dy = (event.y - lastTouchY) * speed
+                    if (kotlin.math.abs(dx) > dp(1) || kotlin.math.abs(dy) > dp(1)) {
+                        cursorMoved = true
+                    }
+                    cursorX = (cursorX + dx).coerceIn(0f, width.toFloat())
+                    cursorY = (cursorY + dy).coerceIn(0f, height.toFloat())
                     lastTouchX = event.x
                     lastTouchY = event.y
                     sendHover(event.eventTime)
@@ -227,7 +273,8 @@ private class CursorOverlayView(
                 return true
             }
             MotionEvent.ACTION_UP -> {
-                if (!twoFingerGesture) {
+                // Moving the pointer is not a click. Tap the touchpad to click at the cursor.
+                if (!twoFingerGesture && !cursorMoved) {
                     sendClick(event.eventTime)
                     performClick()
                 }
@@ -247,6 +294,12 @@ private class CursorOverlayView(
         return true
     }
 
+    private fun averagePointerX(event: MotionEvent): Float {
+        var sum = 0f
+        for (index in 0 until event.pointerCount) sum += event.getX(index)
+        return sum / event.pointerCount.coerceAtLeast(1)
+    }
+
     private fun averagePointerY(event: MotionEvent): Float {
         var sum = 0f
         for (index in 0 until event.pointerCount) sum += event.getY(index)
@@ -260,24 +313,18 @@ private class CursorOverlayView(
         event.recycle()
     }
 
-    private fun sendWheel(deltaY: Float, eventTime: Long) {
+    private fun sendWheel(deltaX: Float, deltaY: Float) {
         val density = resources.displayMetrics.density.coerceAtLeast(1f)
-        val scale = target.scale.takeIf { it > 0f } ?: 1f
-        val cssX = cursorX / density / scale
-        val cssY = cursorY / density / scale
-        val cssDelta = -deltaY / density
-        val script = """
-            (() => {
-              const point = document.elementFromPoint($cssX, $cssY) || document;
-              point.dispatchEvent(new WheelEvent('wheel', {
-                bubbles: true,
-                cancelable: true,
-                deltaX: 0,
-                deltaY: $cssDelta,
-                deltaMode: WheelEvent.DOM_DELTA_PIXEL
-              }));
-            })();
-        """.trimIndent()
+        val pageScale = target.scale.takeIf { it > 0f } ?: 1f
+        val cssX = cursorX / density / pageScale
+        val cssY = cursorY / density / pageScale
+        val cssDeltaX = -deltaX / density / pageScale
+        val cssDeltaY = -deltaY / density / pageScale
+        val script = "(() => { const point = document.elementFromPoint(" +
+            cssX + ", " + cssY + ") || document; point.dispatchEvent(new WheelEvent('wheel', {" +
+            "bubbles: true, cancelable: true, deltaX: " + cssDeltaX +
+            ", deltaY: " + cssDeltaY +
+            ", deltaMode: WheelEvent.DOM_DELTA_PIXEL})); })();"
         target.evaluateJavascript(script, null)
     }
 
@@ -287,7 +334,6 @@ private class CursorOverlayView(
         down.source = InputDevice.SOURCE_MOUSE
         target.dispatchTouchEvent(down)
         down.recycle()
-
         val up = MotionEvent.obtain(eventTime, eventTime + 1, MotionEvent.ACTION_UP, cursorX, cursorY, 0)
         up.source = InputDevice.SOURCE_MOUSE
         target.dispatchTouchEvent(up)
@@ -296,11 +342,11 @@ private class CursorOverlayView(
 
     private fun dp(value: Int): Float = value * resources.displayMetrics.density
 }
-
 class MainActivity : Activity() {
     private lateinit var editor: ModifierAwareWebView
     private lateinit var editorContainer: FrameLayout
     private lateinit var cursorOverlay: CursorOverlayView
+    private lateinit var pageScaleDetector: ScaleGestureDetector
     private lateinit var keyboardBar: HorizontalScrollView
     private lateinit var loadingProgressBar: ProgressBar
     private val modifierButtons = mutableMapOf<Int, Button>()
@@ -324,8 +370,12 @@ class MainActivity : Activity() {
     private var originalUserAgent: String? = null
     private var desktopMode = false
     private var pageZoom = 1.0f
+    private var appliedPageZoom = 1.0f
     private var keyBarVisible = true
     private var cursorModeEnabled = false
+    private var cursorSpeed = 1.35f
+    private var cursorSizeDp = 28
+    private var cursorColor = Color.WHITE
     private var zoomLabelButton: Button? = null
     private var desktopModeButton: Button? = null
     private var cursorModeButton: Button? = null
@@ -354,6 +404,9 @@ class MainActivity : Activity() {
             ?.let { runCatching { Uri.parse(it) }.getOrNull() }
         desktopMode = preferences.getBoolean(KEY_DESKTOP_MODE, false)
         pageZoom = preferences.getFloat(KEY_PAGE_ZOOM, 1.0f).coerceIn(MIN_PAGE_ZOOM, MAX_PAGE_ZOOM)
+        cursorSpeed = preferences.getFloat(KEY_CURSOR_SPEED, 1.35f).coerceIn(0.5f, 3.0f)
+        cursorSizeDp = preferences.getInt(KEY_CURSOR_SIZE, 28).coerceIn(16, 48)
+        cursorColor = preferences.getInt(KEY_CURSOR_COLOR, Color.WHITE)
         keyBarVisible = preferences.getBoolean(KEY_KEYBAR_VISIBLE, true)
 
         window.setSoftInputMode(WindowManager.LayoutParams.SOFT_INPUT_ADJUST_RESIZE)
@@ -409,7 +462,12 @@ class MainActivity : Activity() {
 
         header.addView(makeHeaderButton("Folder") { openFolderFromToolbar() })
         header.addView(makeHeaderButton("Remote") { showRemoteDialog() })
-        headerCursorButton = makeHeaderButton("Ptr") { toggleCursorMode() }
+        headerCursorButton = makeHeaderButton("Ptr") { toggleCursorMode() }.apply {
+            setOnLongClickListener {
+                showCursorSettingsDialog()
+                true
+            }
+        }
         header.addView(headerCursorButton)
         header.addView(makeHeaderButton("Keys") { toggleKeyboardBar() })
         header.addView(makeHeaderButton("Info") { showAboutDialog() })
@@ -459,6 +517,7 @@ class MainActivity : Activity() {
             settings.setSupportMultipleWindows(true)
             // Support viewport-aware zoomBy while hiding Android's built-in pinch/zoom controls.
             settings.setSupportZoom(true)
+            // Toolbar and ScaleGestureDetector own zoom; hide WebView's own pinch/buttons.
             settings.builtInZoomControls = false
             settings.displayZoomControls = false
             settings.useWideViewPort = true
@@ -482,18 +541,24 @@ class MainActivity : Activity() {
             setOnTouchListener { view, event ->
                 when (event.actionMasked) {
                     MotionEvent.ACTION_DOWN -> {
+                        pageScaleDetector.onTouchEvent(event)
                         editorTouchStartX = event.x
                         editorTouchStartY = event.y
                         editorGestureMoved = false
                     }
                     MotionEvent.ACTION_MOVE -> {
+                        pageScaleDetector.onTouchEvent(event)
                         val deltaX = kotlin.math.abs(event.x - editorTouchStartX)
                         val deltaY = kotlin.math.abs(event.y - editorTouchStartY)
                         if (deltaX > editorTouchSlop || deltaY > editorTouchSlop) {
                             editorGestureMoved = true
                         }
                     }
+                    MotionEvent.ACTION_POINTER_DOWN, MotionEvent.ACTION_POINTER_UP -> {
+                        pageScaleDetector.onTouchEvent(event)
+                    }
                     MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
+                        pageScaleDetector.onTouchEvent(event)
                         if (editorGestureMoved) {
                             // A swipe/scroll should dismiss the IME without blurring Monaco's editor.
                             view.postDelayed({ hideKeyboardAfterEditorScroll() }, 90)
@@ -511,6 +576,7 @@ class MainActivity : Activity() {
                     favicon: android.graphics.Bitmap?
                 ) {
                     super.onPageStarted(view, url, favicon)
+                    appliedPageZoom = 1.0f // The WebView page scale resets on full navigation.
                     loadingProgressBar.progress = 5
                     loadingProgressBar.visibility = View.VISIBLE
                 }
@@ -583,6 +649,26 @@ class MainActivity : Activity() {
             }
         }
 
+        pageScaleDetector = ScaleGestureDetector(
+            this,
+            object : ScaleGestureDetector.SimpleOnScaleGestureListener() {
+                override fun onScale(detector: ScaleGestureDetector): Boolean {
+                    val nextZoom = (pageZoom * detector.scaleFactor)
+                        .coerceIn(MIN_PAGE_ZOOM, MAX_PAGE_ZOOM)
+                    if (nextZoom != pageZoom) {
+                        val factor = nextZoom / pageZoom
+                        runCatching { editor.zoomBy(factor) }
+                            .onSuccess {
+                                pageZoom = nextZoom
+                                appliedPageZoom *= factor
+                                persistPageZoom()
+                            }
+                    }
+                    return true
+                }
+            }
+        )
+
         CookieManager.getInstance().apply {
             setAcceptCookie(true)
             setAcceptThirdPartyCookies(editor, true)
@@ -596,8 +682,9 @@ class MainActivity : Activity() {
                 ViewGroup.LayoutParams.MATCH_PARENT
             )
         )
-        cursorOverlay = CursorOverlayView(this, editor).apply {
+        cursorOverlay = CursorOverlayView(this, editor, ::applyPinchZoom).apply {
             visibility = View.GONE
+            updateSettings(cursorSizeDp, cursorSpeed, cursorColor)
         }
         editorContainer.addView(
             cursorOverlay,
@@ -635,6 +722,10 @@ class MainActivity : Activity() {
         rowContent(keyboardBar).addView(desktopModeButton)
         cursorModeButton = makeKeyButton("Cursor OFF").apply {
             setOnClickListener { toggleCursorMode() }
+            setOnLongClickListener {
+                showCursorSettingsDialog()
+                true
+            }
         }
         rowContent(keyboardBar).addView(cursorModeButton)
 
@@ -685,10 +776,9 @@ class MainActivity : Activity() {
             settings.javaScriptEnabled = true
             settings.domStorageEnabled = true
             settings.javaScriptCanOpenWindowsAutomatically = true
-            // Keep OAuth popups in this same authentication window instead of spawning unhandled nested windows.
             settings.setSupportMultipleWindows(false)
             settings.setSupportZoom(true)
-            settings.builtInZoomControls = false
+            settings.builtInZoomControls = true
             settings.displayZoomControls = false
             settings.userAgentString = editor.settings.userAgentString
             settings.mixedContentMode = android.webkit.WebSettings.MIXED_CONTENT_NEVER_ALLOW
@@ -707,16 +797,20 @@ class MainActivity : Activity() {
                     view: WebView,
                     request: WebResourceRequest
                 ): Boolean {
-                    val host = request.url.host.orEmpty()
+                    val uri = request.url
+                    val host = uri.host.orEmpty().lowercase()
                     if (host.endsWith(".github.dev") ||
-                        (host == "vscode.dev" && request.url.path?.startsWith("/tunnel/") == true)
+                        (host == "vscode.dev" && uri.path?.startsWith("/tunnel/") == true)
                     ) {
-                        // Route a Codespace or tunnel editor opened in a popup into the main view.
-                        editor.loadUrl(request.url.toString())
+                        editor.loadUrl(uri.toString())
                         closeAuthenticationPopup()
                         return true
                     }
-                    return handleExternalUrl(request.url)
+
+                    // Provider pages such as GitHub and Microsoft sign-in go to the default browser.
+                    val openedExternally = handleExternalUrl(uri)
+                    if (openedExternally) closeAuthenticationPopup()
+                    return openedExternally
                 }
             }
             webChromeClient = object : WebChromeClient() {
@@ -726,78 +820,83 @@ class MainActivity : Activity() {
             }
         }
 
-        val popupLayout = LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL
-            setBackgroundColor(Color.rgb(30, 30, 30))
-            addView(
-                makeHeaderButton("Close sign-in") { closeAuthenticationPopup() },
-                LinearLayout.LayoutParams(
-                    ViewGroup.LayoutParams.MATCH_PARENT,
-                    dp(48)
-                )
-            )
-            addView(
-                popup,
-                LinearLayout.LayoutParams(
-                    ViewGroup.LayoutParams.MATCH_PARENT,
-                    0,
-                    1f
-                )
-            )
-        }
-
         val transport = resultMsg.obj as? WebView.WebViewTransport ?: run {
             popup.destroy()
             return false
         }
         transport.webView = popup
-
-        val dialog = AlertDialog.Builder(this)
-            .setView(popupLayout)
-            .create()
         authPopupWebView = popup
-        authPopupDialog = dialog
-        dialog.setOnDismissListener {
-            popup.stopLoading()
-            popup.destroy()
-            if (authPopupWebView === popup) authPopupWebView = null
-            if (authPopupDialog === dialog) authPopupDialog = null
-        }
-        dialog.show()
-        dialog.window?.setLayout(
-            ViewGroup.LayoutParams.MATCH_PARENT,
-            ViewGroup.LayoutParams.MATCH_PARENT
+
+        // Keep the OAuth popup alive as a navigation relay, but never render an in-app browser.
+        editorContainer.addView(
+            popup,
+            FrameLayout.LayoutParams(dp(1), dp(1))
         )
+        popup.alpha = 0.01f
         resultMsg.sendToTarget()
         return true
     }
 
     private fun closeAuthenticationPopup() {
         authPopupDialog?.dismiss()
+        val popup = authPopupWebView
+        authPopupWebView = null // Clear first so onCloseWindow cannot recursively destroy it.
+        if (popup != null) {
+            (popup.parent as? ViewGroup)?.removeView(popup)
+            popup.stopLoading()
+            popup.destroy()
+        }
     }
 
     private fun handleExternalUrl(uri: Uri): Boolean {
-        if (uri.scheme == "https") return false
+        val scheme = uri.scheme?.lowercase()
+        if (scheme == "http" || scheme == "https") {
+            val host = uri.host.orEmpty().lowercase()
+            // Only keep the VS Code web editor and active Codespaces/tunnel editors in this WebView.
+            val isWorkspaceHost = host == "vscode.dev" ||
+                host == "insiders.vscode.dev" ||
+                host == "github.dev" ||
+                host.endsWith(".github.dev")
+            if (isWorkspaceHost) return false
+            return openInDefaultBrowser(uri)
+        }
 
-        return when (uri.scheme?.lowercase()) {
+        return when (scheme) {
             "mailto", "tel", "sms", "geo", "intent", "vscode" -> {
                 try {
-                    val intent = if (uri.scheme == "intent") {
+                    val intent = if (scheme == "intent") {
                         Intent.parseUri(uri.toString(), Intent.URI_INTENT_SCHEME)
                     } else {
                         Intent(Intent.ACTION_VIEW, uri)
-                    }
+                    }.addCategory(Intent.CATEGORY_BROWSABLE)
                     startActivity(intent)
                 } catch (_: Exception) {
                     Toast.makeText(
                         this,
-                        "This link needs a compatible Android app or browser.",
+                        "No Android app is available to open this link.",
                         Toast.LENGTH_LONG
                     ).show()
                 }
                 true
             }
             else -> true
+        }
+    }
+
+    private fun openInDefaultBrowser(uri: Uri): Boolean {
+        return try {
+            startActivity(
+                Intent(Intent.ACTION_VIEW, uri)
+                    .addCategory(Intent.CATEGORY_BROWSABLE)
+            )
+            true
+        } catch (_: Exception) {
+            Toast.makeText(
+                this,
+                "No default browser is available to open this link.",
+                Toast.LENGTH_LONG
+            ).show()
+            true
         }
     }
 
@@ -856,27 +955,44 @@ class MainActivity : Activity() {
     }
 
     /**
-     * Apply browser-style page scale with WebView.zoomBy. CSS zoom had left
-     * the editor occupying only part of the screen below 100%.
+     * Track the factor applied by this app instead of WebView.scale.
+     * WebView.scale includes the renderer's device scale and is not the
+     * zoom percentage displayed in the toolbar.
      */
     private fun applyNativePageZoom(view: WebView = editor) {
         if (view.width <= 0 || view.height <= 0) return
         view.post {
-            val currentScale = view.scale.takeIf { it > 0f } ?: 1f
-            val factor = (pageZoom / currentScale).coerceIn(0.25f, 4f)
-            if (kotlin.math.abs(factor - 1f) > 0.01f) {
+            val factor = (pageZoom / appliedPageZoom).coerceIn(0.25f, 4f)
+            if (kotlin.math.abs(factor - 1f) > 0.005f) {
                 runCatching { view.zoomBy(factor) }
+                    .onSuccess { appliedPageZoom = pageZoom }
+                    .onFailure {
+                        Toast.makeText(this, "WebView could not apply page zoom.", Toast.LENGTH_SHORT).show()
+                    }
             }
             zoomLabelButton?.text = "${(pageZoom * 100).toInt()}%"
         }
     }
 
+    private fun applyPinchZoom(scaleFactor: Float) {
+        val nextZoom = (pageZoom * scaleFactor).coerceIn(MIN_PAGE_ZOOM, MAX_PAGE_ZOOM)
+        if (nextZoom == pageZoom || !::editor.isInitialized) return
+
+        val factor = nextZoom / pageZoom
+        runCatching { editor.zoomBy(factor) }
+            .onSuccess {
+                pageZoom = nextZoom
+                appliedPageZoom *= factor
+                persistPageZoom()
+            }
+    }
+
     private fun applyPagePresentation(view: WebView) {
         val isDesktop = desktopMode
         val viewport = if (isDesktop) {
-            "width=1280, initial-scale=1.0, maximum-scale=5.0, user-scalable=yes"
+            "width=1280, initial-scale=1.0, minimum-scale=0.25, maximum-scale=4.0, user-scalable=yes"
         } else {
-            "width=device-width, initial-scale=1.0, maximum-scale=5.0, user-scalable=yes"
+            "width=device-width, initial-scale=1.0, minimum-scale=0.25, maximum-scale=4.0, user-scalable=yes"
         }
         val viewportJson = JSONObject.quote(viewport)
         val script = """
@@ -943,6 +1059,7 @@ class MainActivity : Activity() {
             .setTitle("VS Code remote tools")
             .setItems(
                 arrayOf(
+                    "Sign in to VS Code (GitHub / Microsoft)",
                     "Open VS Code Command Palette",
                     "Open Codespaces dashboard",
                     "Create / resume Codespace for a repository",
@@ -951,15 +1068,61 @@ class MainActivity : Activity() {
                 )
             ) { _, which ->
                 when (which) {
-                    0 -> openVsCodeRemoteCommandPalette()
-                    1 -> openCodespaces()
-                    2 -> promptCreateCodespace()
-                    3 -> promptOpenCodespaceByName()
-                    4 -> openCopilotExtension()
+                    0 -> openVsCodeSignIn()
+                    1 -> openVsCodeRemoteCommandPalette()
+                    2 -> openCodespaces()
+                    3 -> promptCreateCodespace()
+                    4 -> promptOpenCodespaceByName()
+                    5 -> openCopilotExtension()
                 }
             }
             .setNegativeButton("Close", null)
             .show()
+    }
+
+    /**
+     * Opens VS Code's built-in Accounts: Sign In action. The provider selection and
+     * OAuth implementation remain owned by VS Code; provider URLs are handed to Android's browser.
+     */
+    private fun openVsCodeSignIn() {
+        sendKey(
+            KeyEvent.KEYCODE_P,
+            KeyEvent.META_CTRL_ON or KeyEvent.META_SHIFT_ON
+        )
+        editor.postDelayed({
+            val query = """
+                (() => {
+                  const input = document.querySelector(
+                    '.quick-input-widget input, .quick-input-widget .monaco-inputbox input'
+                  );
+                  if (!input) return false;
+                  const descriptor = Object.getOwnPropertyDescriptor(
+                    HTMLInputElement.prototype,
+                    'value'
+                  );
+                  descriptor?.set?.call(input, 'Sign In');
+                  input.dispatchEvent(new Event('input', { bubbles: true }));
+                  input.focus();
+                  return true;
+                })();
+            """.trimIndent()
+            editor.evaluateJavascript(query) { result ->
+                if (result == "true") {
+                    editor.postDelayed({ sendKey(KeyEvent.KEYCODE_ENTER) }, 220)
+                    Toast.makeText(
+                        this,
+                        "VS Code sign-in opened. Choose the available account provider; authentication opens in your default browser.",
+                        Toast.LENGTH_LONG
+                    ).show()
+                } else {
+                    Toast.makeText(
+                        this,
+                        "Command Palette opened. Search for Accounts: Sign In.",
+                        Toast.LENGTH_LONG
+                    ).show()
+                }
+            }
+        }, 220)
     }
 
     /**
@@ -1059,6 +1222,83 @@ class MainActivity : Activity() {
         val button = makeKeyButton(label)
         button.setOnClickListener { onClick() }
         rowContent(row).addView(button)
+    }
+
+    private fun showCursorSettingsDialog() {
+        val panel = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(dp(20), dp(12), dp(20), dp(8))
+        }
+
+        fun addSettingLabel(label: String) {
+            panel.addView(TextView(this).apply {
+                text = label
+                textSize = 13f
+                setTextColor(Color.WHITE)
+                setPadding(0, dp(10), 0, dp(3))
+            })
+        }
+
+        addSettingLabel("Pointer speed")
+        val speedSlider = SeekBar(this).apply {
+            max = 25 // 0.5x to 3.0x, in 0.1x steps.
+            progress = ((cursorSpeed - 0.5f) * 10f).toInt().coerceIn(0, max)
+        }
+        panel.addView(speedSlider)
+
+        addSettingLabel("Pointer size")
+        val sizeSlider = SeekBar(this).apply {
+            max = 32 // 16dp to 48dp.
+            progress = (cursorSizeDp - 16).coerceIn(0, max)
+        }
+        panel.addView(sizeSlider)
+
+        addSettingLabel("Pointer color")
+        val colors = RadioGroup(this).apply {
+            orientation = RadioGroup.HORIZONTAL
+        }
+        val choices = listOf(
+            Triple(1, "White", Color.WHITE),
+            Triple(2, "Yellow", Color.YELLOW),
+            Triple(3, "Cyan", Color.CYAN)
+        )
+        choices.forEach { (id, label, color) ->
+            colors.addView(RadioButton(this).apply {
+                this.id = id
+                text = label
+                setTextColor(Color.WHITE)
+                buttonTintList = android.content.res.ColorStateList.valueOf(color)
+            })
+        }
+        val selectedColorId = when (cursorColor) {
+            Color.YELLOW -> 2
+            Color.CYAN -> 3
+            else -> 1
+        }
+        colors.check(selectedColorId)
+        panel.addView(colors)
+
+        AlertDialog.Builder(this)
+            .setTitle("Cursor settings")
+            .setView(panel)
+            .setPositiveButton("Save") { _, _ ->
+                cursorSpeed = (0.5f + speedSlider.progress * 0.1f).coerceIn(0.5f, 3.0f)
+                cursorSizeDp = (16 + sizeSlider.progress).coerceIn(16, 48)
+                cursorColor = when (colors.checkedRadioButtonId) {
+                    2 -> Color.YELLOW
+                    3 -> Color.CYAN
+                    else -> Color.WHITE
+                }
+                getSharedPreferences(PREFERENCES, MODE_PRIVATE)
+                    .edit()
+                    .putFloat(KEY_CURSOR_SPEED, cursorSpeed)
+                    .putInt(KEY_CURSOR_SIZE, cursorSizeDp)
+                    .putInt(KEY_CURSOR_COLOR, cursorColor)
+                    .apply()
+                cursorOverlay.updateSettings(cursorSizeDp, cursorSpeed, cursorColor)
+            }
+            .setNegativeButton("Cancel", null)
+            .show()
     }
 
     private fun toggleCursorMode() {
@@ -1997,7 +2237,7 @@ class MainActivity : Activity() {
     }
 
     private fun handleBackNavigation() {
-        if (authPopupDialog?.isShowing == true) {
+        if (authPopupDialog?.isShowing == true || authPopupWebView != null) {
             closeAuthenticationPopup()
             return
         }
@@ -2011,7 +2251,10 @@ class MainActivity : Activity() {
         }
 
         val currentHost = runCatching { Uri.parse(editor.url).host }.getOrNull()
-        if (currentHost != "vscode.dev") {
+        if (currentHost != "vscode.dev" &&
+            currentHost?.endsWith(".github.dev") != true &&
+            currentHost != "github.dev"
+        ) {
             editor.loadUrl(VSCODE_WEB_URL)
         }
     }
@@ -2025,7 +2268,7 @@ class MainActivity : Activity() {
         pendingFileChooser?.onReceiveValue(null)
         pendingFileChooser = null
         pendingBridgePicker = null
-        authPopupDialog?.dismiss()
+        closeAuthenticationPopup()
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
             backInvokedCallback?.let {
                 onBackInvokedDispatcher.unregisterOnBackInvokedCallback(it)
@@ -2052,9 +2295,12 @@ class MainActivity : Activity() {
         private const val KEY_DESKTOP_MODE = "desktop_mode"
         private const val KEY_PAGE_ZOOM = "page_zoom"
         private const val KEY_KEYBAR_VISIBLE = "keybar_visible"
+        private const val KEY_CURSOR_SPEED = "cursor_speed"
+        private const val KEY_CURSOR_SIZE = "cursor_size"
+        private const val KEY_CURSOR_COLOR = "cursor_color"
         private const val ZOOM_STEP = 0.1f
-        private const val MIN_PAGE_ZOOM = 0.6f
-        private const val MAX_PAGE_ZOOM = 2.0f
+        private const val MIN_PAGE_ZOOM = 0.3f
+        private const val MAX_PAGE_ZOOM = 3.0f
         private const val REQUEST_BRIDGE_FOLDER = 4201
         private const val REQUEST_BRIDGE_FILE = 4202
         private const val REQUEST_TOOLBAR_FOLDER = 4203
