@@ -346,6 +346,7 @@ class MainActivity : Activity() {
     private lateinit var editor: ModifierAwareWebView
     private lateinit var editorContainer: FrameLayout
     private lateinit var cursorOverlay: CursorOverlayView
+    private lateinit var pageScaleDetector: ScaleGestureDetector
     private lateinit var keyboardBar: HorizontalScrollView
     private lateinit var loadingProgressBar: ProgressBar
     private val modifierButtons = mutableMapOf<Int, Button>()
@@ -516,8 +517,8 @@ class MainActivity : Activity() {
             settings.setSupportMultipleWindows(true)
             // Support viewport-aware zoomBy while hiding Android's built-in pinch/zoom controls.
             settings.setSupportZoom(true)
-            // Native pinch recognizer on, built-in on-screen zoom buttons off.
-            settings.builtInZoomControls = true
+            // Toolbar and ScaleGestureDetector own zoom; hide WebView's own pinch/buttons.
+            settings.builtInZoomControls = false
             settings.displayZoomControls = false
             settings.useWideViewPort = true
             // Keep desktop page width intact so it can be panned instead of auto-shrunk/clipped.
@@ -540,18 +541,24 @@ class MainActivity : Activity() {
             setOnTouchListener { view, event ->
                 when (event.actionMasked) {
                     MotionEvent.ACTION_DOWN -> {
+                        pageScaleDetector.onTouchEvent(event)
                         editorTouchStartX = event.x
                         editorTouchStartY = event.y
                         editorGestureMoved = false
                     }
                     MotionEvent.ACTION_MOVE -> {
+                        pageScaleDetector.onTouchEvent(event)
                         val deltaX = kotlin.math.abs(event.x - editorTouchStartX)
                         val deltaY = kotlin.math.abs(event.y - editorTouchStartY)
                         if (deltaX > editorTouchSlop || deltaY > editorTouchSlop) {
                             editorGestureMoved = true
                         }
                     }
+                    MotionEvent.ACTION_POINTER_DOWN, MotionEvent.ACTION_POINTER_UP -> {
+                        pageScaleDetector.onTouchEvent(event)
+                    }
                     MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
+                        pageScaleDetector.onTouchEvent(event)
                         if (editorGestureMoved) {
                             // A swipe/scroll should dismiss the IME without blurring Monaco's editor.
                             view.postDelayed({ hideKeyboardAfterEditorScroll() }, 90)
@@ -641,6 +648,26 @@ class MainActivity : Activity() {
                 }
             }
         }
+
+        pageScaleDetector = ScaleGestureDetector(
+            this,
+            object : ScaleGestureDetector.SimpleOnScaleGestureListener() {
+                override fun onScale(detector: ScaleGestureDetector): Boolean {
+                    val nextZoom = (pageZoom * detector.scaleFactor)
+                        .coerceIn(MIN_PAGE_ZOOM, MAX_PAGE_ZOOM)
+                    if (nextZoom != pageZoom) {
+                        val factor = nextZoom / pageZoom
+                        runCatching { editor.zoomBy(factor) }
+                            .onSuccess {
+                                pageZoom = nextZoom
+                                appliedPageZoom *= factor
+                                persistPageZoom()
+                            }
+                    }
+                    return true
+                }
+            }
+        )
 
         CookieManager.getInstance().apply {
             setAcceptCookie(true)
