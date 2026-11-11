@@ -1033,6 +1033,7 @@ class MainActivity : Activity() {
             .setTitle("VS Code remote tools")
             .setItems(
                 arrayOf(
+                    "Sign in to VS Code (GitHub / Microsoft)",
                     "Open VS Code Command Palette",
                     "Open Codespaces dashboard",
                     "Create / resume Codespace for a repository",
@@ -1041,15 +1042,61 @@ class MainActivity : Activity() {
                 )
             ) { _, which ->
                 when (which) {
-                    0 -> openVsCodeRemoteCommandPalette()
-                    1 -> openCodespaces()
-                    2 -> promptCreateCodespace()
-                    3 -> promptOpenCodespaceByName()
-                    4 -> openCopilotExtension()
+                    0 -> openVsCodeSignIn()
+                    1 -> openVsCodeRemoteCommandPalette()
+                    2 -> openCodespaces()
+                    3 -> promptCreateCodespace()
+                    4 -> promptOpenCodespaceByName()
+                    5 -> openCopilotExtension()
                 }
             }
             .setNegativeButton("Close", null)
             .show()
+    }
+
+    /**
+     * Opens VS Code's built-in Accounts: Sign In action. The provider selection and
+     * OAuth implementation remain owned by VS Code; provider URLs are handed to Android's browser.
+     */
+    private fun openVsCodeSignIn() {
+        sendKey(
+            KeyEvent.KEYCODE_P,
+            KeyEvent.META_CTRL_ON or KeyEvent.META_SHIFT_ON
+        )
+        editor.postDelayed({
+            val query = """
+                (() => {
+                  const input = document.querySelector(
+                    '.quick-input-widget input, .quick-input-widget .monaco-inputbox input'
+                  );
+                  if (!input) return false;
+                  const descriptor = Object.getOwnPropertyDescriptor(
+                    HTMLInputElement.prototype,
+                    'value'
+                  );
+                  descriptor?.set?.call(input, 'Sign In');
+                  input.dispatchEvent(new Event('input', { bubbles: true }));
+                  input.focus();
+                  return true;
+                })();
+            """.trimIndent()
+            editor.evaluateJavascript(query) { result ->
+                if (result == "true") {
+                    editor.postDelayed({ sendKey(KeyEvent.KEYCODE_ENTER) }, 220)
+                    Toast.makeText(
+                        this,
+                        "VS Code sign-in opened. Choose the available account provider; authentication opens in your default browser.",
+                        Toast.LENGTH_LONG
+                    ).show()
+                } else {
+                    Toast.makeText(
+                        this,
+                        "Command Palette opened. Search for Accounts: Sign In.",
+                        Toast.LENGTH_LONG
+                    ).show()
+                }
+            }
+        }, 220)
     }
 
     /**
@@ -2164,7 +2211,7 @@ class MainActivity : Activity() {
     }
 
     private fun handleBackNavigation() {
-        if (authPopupDialog?.isShowing == true) {
+        if (authPopupDialog?.isShowing == true || authPopupWebView != null) {
             closeAuthenticationPopup()
             return
         }
@@ -2192,7 +2239,7 @@ class MainActivity : Activity() {
         pendingFileChooser?.onReceiveValue(null)
         pendingFileChooser = null
         pendingBridgePicker = null
-        authPopupDialog?.dismiss()
+        closeAuthenticationPopup()
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
             backInvokedCallback?.let {
                 onBackInvokedDispatcher.unregisterOnBackInvokedCallback(it)
@@ -2219,9 +2266,12 @@ class MainActivity : Activity() {
         private const val KEY_DESKTOP_MODE = "desktop_mode"
         private const val KEY_PAGE_ZOOM = "page_zoom"
         private const val KEY_KEYBAR_VISIBLE = "keybar_visible"
+        private const val KEY_CURSOR_SPEED = "cursor_speed"
+        private const val KEY_CURSOR_SIZE = "cursor_size"
+        private const val KEY_CURSOR_COLOR = "cursor_color"
         private const val ZOOM_STEP = 0.1f
-        private const val MIN_PAGE_ZOOM = 0.6f
-        private const val MAX_PAGE_ZOOM = 2.0f
+        private const val MIN_PAGE_ZOOM = 0.3f
+        private const val MAX_PAGE_ZOOM = 3.0f
         private const val REQUEST_BRIDGE_FOLDER = 4201
         private const val REQUEST_BRIDGE_FILE = 4202
         private const val REQUEST_TOOLBAR_FOLDER = 4203
