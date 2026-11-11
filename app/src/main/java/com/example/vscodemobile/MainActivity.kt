@@ -7,7 +7,10 @@ import android.graphics.Color
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
+import android.os.Message
 import android.os.SystemClock
+import android.window.OnBackInvokedCallback
+import android.window.OnBackInvokedDispatcher
 import android.provider.DocumentsContract
 import android.util.Base64
 import android.view.Gravity
@@ -15,12 +18,14 @@ import android.view.InputDevice
 import android.view.KeyEvent
 import android.view.ViewGroup
 import android.view.WindowManager
+import android.webkit.CookieManager
 import android.webkit.ValueCallback
 import android.webkit.WebChromeClient
 import androidx.webkit.WebMessageCompat
 import android.webkit.WebResourceRequest
 import android.webkit.WebView
 import android.webkit.WebViewClient
+import android.view.inputmethod.InputMethodManager
 import android.widget.Button
 import android.widget.HorizontalScrollView
 import android.widget.ImageView
@@ -53,6 +58,14 @@ class MainActivity : Activity() {
     private var pendingBridgePicker: PendingPicker? = null
     private var pendingFileChooser: ValueCallback<Array<Uri>>? = null
     private var selectedTreeUri: Uri? = null
+    private var authPopupDialog: AlertDialog? = null
+    private var authPopupWebView: WebView? = null
+    private var originalUserAgent: String? = null
+    private var desktopMode = false
+    private var pageZoom = 1.0f
+    private var zoomLabelButton: Button? = null
+    private var desktopModeButton: Button? = null
+    private var backInvokedCallback: OnBackInvokedCallback? = null
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -69,10 +82,12 @@ class MainActivity : Activity() {
             }
         }
         enableImmersiveStatusBar()
+        registerSystemBackCallback()
 
-        selectedTreeUri = getSharedPreferences(PREFERENCES, MODE_PRIVATE)
-            .getString(KEY_TREE_URI, null)
+        val preferences = getSharedPreferences(PREFERENCES, MODE_PRIVATE)
+        selectedTreeUri = preferences.getString(KEY_TREE_URI, null)
             ?.let { runCatching { Uri.parse(it) }.getOrNull() }
+        desktopMode = preferences.getBoolean(KEY_DESKTOP_MODE, false)
 
         window.setSoftInputMode(WindowManager.LayoutParams.SOFT_INPUT_ADJUST_RESIZE)
         window.statusBarColor = Color.rgb(30, 30, 30)
@@ -139,8 +154,17 @@ class MainActivity : Activity() {
             settings.databaseEnabled = true
             settings.allowFileAccess = false
             settings.allowContentAccess = false
-            settings.javaScriptCanOpenWindowsAutomatically = false
-            settings.setSupportMultipleWindows(false)
+            settings.javaScriptCanOpenWindowsAutomatically = true
+            settings.setSupportMultipleWindows(true)
+            settings.setSupportZoom(false) // Zoom is controlled by dedicated toolbar buttons.
+            settings.builtInZoomControls = false
+            settings.displayZoomControls = false
+            settings.useWideViewPort = true
+            settings.loadWithOverviewMode = desktopMode
+            originalUserAgent = settings.userAgentString
+            if (desktopMode) {
+                settings.userAgentString = asDesktopUserAgent(originalUserAgent.orEmpty())
+            }
             settings.mixedContentMode = android.webkit.WebSettings.MIXED_CONTENT_NEVER_ALLOW
 
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
@@ -166,6 +190,19 @@ class MainActivity : Activity() {
             }
 
             webChromeClient = object : WebChromeClient() {
+                override fun onCreateWindow(
+                    view: WebView,
+                    isDialog: Boolean,
+                    isUserGesture: Boolean,
+                    resultMsg: Message
+                ): Boolean {
+                    return showAuthenticationPopup(resultMsg)
+                }
+
+                override fun onCloseWindow(window: WebView) {
+                    if (window === authPopupWebView) closeAuthenticationPopup()
+                }
+
                 override fun onShowFileChooser(
                     webView: WebView,
                     filePathCallback: ValueCallback<Array<Uri>>,
@@ -200,6 +237,11 @@ class MainActivity : Activity() {
             }
         }
 
+        CookieManager.getInstance().apply {
+            setAcceptCookie(true)
+            setAcceptThirdPartyCookies(editor, true)
+        }
+
         root.addView(
             editor,
             LinearLayout.LayoutParams(
@@ -214,6 +256,21 @@ class MainActivity : Activity() {
             setBackgroundColor(Color.rgb(37, 37, 38))
             setPadding(dp(3), dp(3), dp(3), dp(3))
         }
+
+        val controlRow = createKeyRow()
+        addControlButton(controlRow, "⌨") { showInternalKeyboard() }
+        addControlButton(controlRow, "−") { changePageZoom(-ZOOM_STEP) }
+        zoomLabelButton = makeKeyButton("100%").apply {
+            setOnClickListener { resetPageZoom() }
+        }
+        rowContent(controlRow).addView(zoomLabelButton)
+        addControlButton(controlRow, "+") { changePageZoom(ZOOM_STEP) }
+        desktopModeButton = makeKeyButton(if (desktopMode) "Desktop ✓" else "Desktop").apply {
+            setOnClickListener { toggleDesktopMode() }
+        }
+        rowContent(controlRow).addView(desktopModeButton)
+        addControlButton(controlRow, "Sync") { showSyncHelp() }
+        addControlButton(controlRow, "Codespaces") { openCodespaces() }
 
         val firstRow = createKeyRow()
         addModifierButton(firstRow, "CTRL", KeyEvent.META_CTRL_ON)
@@ -239,6 +296,7 @@ class MainActivity : Activity() {
         addKeyButton(secondRow, "END", KeyEvent.KEYCODE_MOVE_END)
         addKeyButton(secondRow, "DEL", KeyEvent.KEYCODE_DEL)
 
+        keyboardBar.addView(controlRow)
         keyboardBar.addView(firstRow)
         keyboardBar.addView(secondRow)
         root.addView(
@@ -254,6 +312,187 @@ class MainActivity : Activity() {
         enableImmersiveStatusBar()
         installAndroidFileSystemBridge()
         editor.loadUrl(VSCODE_WEB_URL)
+    }
+
+    private fun showAuthenticationPopup(resultMsg: Message): Boolean {
+        if (authPopupWebView != null) return false
+
+        val popup = WebView(this).apply {
+            settings.javaScriptEnabled = true
+            settings.domStorageEnabled = true
+            settings.javaScriptCanOpenWindowsAutomatically = true
+            settings.setSupportMultipleWindows(false)
+            settings.mixedContentMode = android.webkit.WebSettings.MIXED_CONTENT_NEVER_ALLOW
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                settings.safeBrowsingEnabled = true
+            }
+            CookieManager.getInstance().setAcceptThirdPartyCookies(this, true)
+
+            webViewClient = object : WebViewClient() {
+                override fun shouldOverrideUrlLoading(
+                    view: WebView,
+                    request: WebResourceRequest
+                ): Boolean = request.url.scheme != "https"
+            }
+            webChromeClient = object : WebChromeClient() {
+                override fun onCloseWindow(window: WebView) {
+                    closeAuthenticationPopup()
+                }
+            }
+        }
+
+        val popupLayout = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setBackgroundColor(Color.rgb(30, 30, 30))
+            addView(
+                makeHeaderButton("Close sign-in") { closeAuthenticationPopup() },
+                LinearLayout.LayoutParams(
+                    ViewGroup.LayoutParams.MATCH_PARENT,
+                    dp(48)
+                )
+            )
+            addView(
+                popup,
+                LinearLayout.LayoutParams(
+                    ViewGroup.LayoutParams.MATCH_PARENT,
+                    0,
+                    1f
+                )
+            )
+        }
+
+        val transport = resultMsg.obj as? WebView.WebViewTransport ?: run {
+            popup.destroy()
+            return false
+        }
+        transport.webView = popup
+
+        val dialog = AlertDialog.Builder(this)
+            .setView(popupLayout)
+            .create()
+        authPopupWebView = popup
+        authPopupDialog = dialog
+        dialog.setOnDismissListener {
+            popup.stopLoading()
+            popup.destroy()
+            if (authPopupWebView === popup) authPopupWebView = null
+            if (authPopupDialog === dialog) authPopupDialog = null
+        }
+        dialog.show()
+        dialog.window?.setLayout(
+            ViewGroup.LayoutParams.MATCH_PARENT,
+            ViewGroup.LayoutParams.MATCH_PARENT
+        )
+        resultMsg.sendToTarget()
+        return true
+    }
+
+    private fun closeAuthenticationPopup() {
+        authPopupDialog?.dismiss()
+    }
+
+    private fun addControlButton(
+        row: HorizontalScrollView,
+        label: String,
+        onClick: () -> Unit
+    ) {
+        val button = makeKeyButton(label)
+        button.setOnClickListener { onClick() }
+        rowContent(row).addView(button)
+    }
+
+    private fun showInternalKeyboard() {
+        editor.requestFocusFromTouch()
+        val focusScript = """
+            (function () {
+              const input = document.querySelector(
+                ".monaco-editor textarea.inputarea, .monaco-editor textarea"
+              );
+              if (input) input.focus();
+              else if (document.activeElement) document.activeElement.focus();
+            })();
+        """.trimIndent()
+
+        editor.evaluateJavascript(focusScript) {
+            editor.postDelayed({
+                val inputMethodManager =
+                    getSystemService(INPUT_METHOD_SERVICE) as InputMethodManager
+                inputMethodManager.showSoftInput(
+                    editor,
+                    InputMethodManager.SHOW_IMPLICIT
+                )
+            }, 120)
+        }
+    }
+
+    private fun changePageZoom(delta: Float) {
+        val nextZoom = (pageZoom + delta).coerceIn(MIN_PAGE_ZOOM, MAX_PAGE_ZOOM)
+        if (nextZoom == pageZoom) return
+
+        editor.zoomBy(nextZoom / pageZoom)
+        pageZoom = nextZoom
+        zoomLabelButton?.text = "${(pageZoom * 100).toInt()}%"
+    }
+
+    private fun resetPageZoom() {
+        if (pageZoom != 1.0f) {
+            editor.zoomBy(1.0f / pageZoom)
+            pageZoom = 1.0f
+        }
+        zoomLabelButton?.text = "100%"
+    }
+
+    private fun asDesktopUserAgent(userAgent: String): String {
+        return userAgent
+            .replace(Regex("\\s\\(Linux; Android [^)]*\\)"), " (X11; Linux x86_64)")
+            .replace(" Mobile", "")
+            .replace("; wv", "")
+    }
+
+    private fun toggleDesktopMode() {
+        desktopMode = !desktopMode
+        getSharedPreferences(PREFERENCES, MODE_PRIVATE)
+            .edit()
+            .putBoolean(KEY_DESKTOP_MODE, desktopMode)
+            .apply()
+
+        val userAgent = originalUserAgent ?: editor.settings.userAgentString
+        editor.settings.userAgentString =
+            if (desktopMode) asDesktopUserAgent(userAgent) else userAgent
+        editor.settings.useWideViewPort = true
+        editor.settings.loadWithOverviewMode = desktopMode
+        desktopModeButton?.text = if (desktopMode) "Desktop ✓" else "Desktop"
+
+        val currentUrl = editor.url
+            ?.takeIf { Uri.parse(it).scheme == "https" }
+            ?: VSCODE_WEB_URL
+        editor.loadUrl(currentUrl)
+        Toast.makeText(
+            this,
+            if (desktopMode) "Desktop site enabled. Reloading the editor." else "Mobile site enabled.",
+            Toast.LENGTH_SHORT
+        ).show()
+    }
+
+    private fun openCodespaces() {
+        editor.loadUrl(CODESPACES_URL)
+        Toast.makeText(
+            this,
+            "Sign in to GitHub, then create or open a Codespace. Its remote environment provides the terminal.",
+            Toast.LENGTH_LONG
+        ).show()
+    }
+
+    private fun showSyncHelp() {
+        AlertDialog.Builder(this)
+            .setTitle("Backup & Sync")
+            .setMessage(
+                "In VS Code, open the Manage gear menu or Accounts menu, choose " +
+                    "Backup and Sync Settings, select what to sync, then sign in with GitHub. " +
+                    "Authentication popups are enabled in this app."
+            )
+            .setPositiveButton("Got it", null)
+            .show()
     }
 
     private fun makeHeaderButton(label: String, onClick: () -> Unit): Button {
@@ -1002,19 +1241,55 @@ class MainActivity : Activity() {
         if (hasFocus) enableImmersiveStatusBar()
     }
 
-    @Deprecated("Legacy callback retained for wide device compatibility.")
-    override fun onBackPressed() {
-        if (::editor.isInitialized && editor.canGoBack()) {
-            editor.goBack()
-        } else {
-            super.onBackPressed()
+    private fun registerSystemBackCallback() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            val callback = OnBackInvokedCallback { handleBackNavigation() }
+            backInvokedCallback = callback
+            onBackInvokedDispatcher.registerOnBackInvokedCallback(
+                OnBackInvokedDispatcher.PRIORITY_DEFAULT,
+                callback
+            )
         }
+    }
+
+    private fun handleBackNavigation() {
+        if (authPopupDialog?.isShowing == true) {
+            closeAuthenticationPopup()
+            return
+        }
+
+        if (!::editor.isInitialized) return
+
+        // Back navigates inside the editor; it never closes the wrapper activity.
+        if (editor.canGoBack()) {
+            editor.goBack()
+            return
+        }
+
+        val currentHost = runCatching { Uri.parse(editor.url).host }.getOrNull()
+        if (currentHost != "vscode.dev") {
+            editor.loadUrl(VSCODE_WEB_URL)
+        }
+    }
+
+    @Deprecated("Legacy callback retained for Android versions below 13.")
+    override fun onBackPressed() {
+        handleBackNavigation()
     }
 
     override fun onDestroy() {
         pendingFileChooser?.onReceiveValue(null)
         pendingFileChooser = null
         pendingBridgePicker = null
+        authPopupDialog?.dismiss()
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            backInvokedCallback?.let {
+                onBackInvokedDispatcher.unregisterOnBackInvokedCallback(it)
+            }
+        }
+        backInvokedCallback = null
+        authPopupDialog = null
+        authPopupWebView = null
         ioExecutor.shutdownNow()
 
         if (::editor.isInitialized) {
@@ -1027,8 +1302,13 @@ class MainActivity : Activity() {
     companion object {
         private const val VSCODE_WEB_URL = "https://vscode.dev/"
         private const val VSCODE_ORIGIN = "https://vscode.dev"
+        private const val CODESPACES_URL = "https://github.com/codespaces"
         private const val PREFERENCES = "local_workspace"
         private const val KEY_TREE_URI = "selected_tree_uri"
+        private const val KEY_DESKTOP_MODE = "desktop_mode"
+        private const val ZOOM_STEP = 0.1f
+        private const val MIN_PAGE_ZOOM = 0.6f
+        private const val MAX_PAGE_ZOOM = 2.0f
         private const val REQUEST_BRIDGE_FOLDER = 4201
         private const val REQUEST_BRIDGE_FILE = 4202
         private const val REQUEST_TOOLBAR_FOLDER = 4203

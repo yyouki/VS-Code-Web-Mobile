@@ -346,29 +346,27 @@
     selectedDirectory = directoryHandle(uri, name || "Selected folder", []);
   };
 
-  if (typeof window.showDirectoryPicker !== "function") {
-    window.showDirectoryPicker = async () => {
-      if (selectedDirectory) {
-        const handle = selectedDirectory;
-        selectedDirectory = null;
-        return handle;
-      }
+  // Always route the standard picker APIs to Android's Storage Access Framework.
+  // Native WebView implementations are not guaranteed to expose a usable Android folder provider.
+  window.showDirectoryPicker = async () => {
+    if (selectedDirectory) {
+      const handle = selectedDirectory;
+      selectedDirectory = null;
+      return handle;
+    }
 
-      const root = await nativeCall("pickDirectory");
-      return directoryHandle(root.uri, root.name, []);
-    };
-  }
+    const root = await nativeCall("pickDirectory");
+    return directoryHandle(root.uri, root.name, []);
+  };
 
-  if (typeof window.showOpenFilePicker !== "function") {
-    window.showOpenFilePicker = async (options = {}) => {
-      const files = await nativeCall("pickFile", {
-        multiple: Boolean(options.multiple),
-        types: options.types || []
-      });
+  window.showOpenFilePicker = async (options = {}) => {
+    const files = await nativeCall("pickFile", {
+      multiple: Boolean(options.multiple),
+      types: options.types || []
+    });
 
-      return files.map((file) =>
-        fileHandle(file.uri, file.name, file.mimeType, [file.name])
-      );
-    };
-  }
+    return files.map((file) =>
+      fileHandle(file.uri, file.name, file.mimeType, [file.name])
+    );
+  };
 })();
