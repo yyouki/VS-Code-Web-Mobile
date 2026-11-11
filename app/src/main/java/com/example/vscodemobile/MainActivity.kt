@@ -751,10 +751,9 @@ class MainActivity : Activity() {
             settings.javaScriptEnabled = true
             settings.domStorageEnabled = true
             settings.javaScriptCanOpenWindowsAutomatically = true
-            // Keep OAuth popups in this same authentication window instead of spawning unhandled nested windows.
             settings.setSupportMultipleWindows(false)
             settings.setSupportZoom(true)
-            settings.builtInZoomControls = false
+            settings.builtInZoomControls = true
             settings.displayZoomControls = false
             settings.userAgentString = editor.settings.userAgentString
             settings.mixedContentMode = android.webkit.WebSettings.MIXED_CONTENT_NEVER_ALLOW
@@ -773,16 +772,20 @@ class MainActivity : Activity() {
                     view: WebView,
                     request: WebResourceRequest
                 ): Boolean {
-                    val host = request.url.host.orEmpty()
+                    val uri = request.url
+                    val host = uri.host.orEmpty().lowercase()
                     if (host.endsWith(".github.dev") ||
-                        (host == "vscode.dev" && request.url.path?.startsWith("/tunnel/") == true)
+                        (host == "vscode.dev" && uri.path?.startsWith("/tunnel/") == true)
                     ) {
-                        // Route a Codespace or tunnel editor opened in a popup into the main view.
-                        editor.loadUrl(request.url.toString())
+                        editor.loadUrl(uri.toString())
                         closeAuthenticationPopup()
                         return true
                     }
-                    return handleExternalUrl(request.url)
+
+                    // Provider pages such as GitHub and Microsoft sign-in go to the default browser.
+                    val openedExternally = handleExternalUrl(uri)
+                    if (openedExternally) closeAuthenticationPopup()
+                    return openedExternally
                 }
             }
             webChromeClient = object : WebChromeClient() {
@@ -792,78 +795,82 @@ class MainActivity : Activity() {
             }
         }
 
-        val popupLayout = LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL
-            setBackgroundColor(Color.rgb(30, 30, 30))
-            addView(
-                makeHeaderButton("Close sign-in") { closeAuthenticationPopup() },
-                LinearLayout.LayoutParams(
-                    ViewGroup.LayoutParams.MATCH_PARENT,
-                    dp(48)
-                )
-            )
-            addView(
-                popup,
-                LinearLayout.LayoutParams(
-                    ViewGroup.LayoutParams.MATCH_PARENT,
-                    0,
-                    1f
-                )
-            )
-        }
-
         val transport = resultMsg.obj as? WebView.WebViewTransport ?: run {
             popup.destroy()
             return false
         }
         transport.webView = popup
-
-        val dialog = AlertDialog.Builder(this)
-            .setView(popupLayout)
-            .create()
         authPopupWebView = popup
-        authPopupDialog = dialog
-        dialog.setOnDismissListener {
-            popup.stopLoading()
-            popup.destroy()
-            if (authPopupWebView === popup) authPopupWebView = null
-            if (authPopupDialog === dialog) authPopupDialog = null
-        }
-        dialog.show()
-        dialog.window?.setLayout(
-            ViewGroup.LayoutParams.MATCH_PARENT,
-            ViewGroup.LayoutParams.MATCH_PARENT
+
+        // Keep the OAuth popup alive as a navigation relay, but never render an in-app browser.
+        editorContainer.addView(
+            popup,
+            FrameLayout.LayoutParams(dp(1), dp(1))
         )
+        popup.alpha = 0.01f
         resultMsg.sendToTarget()
         return true
     }
 
     private fun closeAuthenticationPopup() {
         authPopupDialog?.dismiss()
+        authPopupWebView?.let { popup ->
+            (popup.parent as? ViewGroup)?.removeView(popup)
+            popup.stopLoading()
+            popup.destroy()
+        }
+        authPopupWebView = null
     }
 
     private fun handleExternalUrl(uri: Uri): Boolean {
-        if (uri.scheme == "https") return false
+        val scheme = uri.scheme?.lowercase()
+        if (scheme == "http" || scheme == "https") {
+            val host = uri.host.orEmpty().lowercase()
+            // Only keep the VS Code web editor and active Codespaces/tunnel editors in this WebView.
+            val isWorkspaceHost = host == "vscode.dev" ||
+                host == "insiders.vscode.dev" ||
+                host == "github.dev" ||
+                host.endsWith(".github.dev")
+            if (isWorkspaceHost) return false
+            return openInDefaultBrowser(uri)
+        }
 
-        return when (uri.scheme?.lowercase()) {
+        return when (scheme) {
             "mailto", "tel", "sms", "geo", "intent", "vscode" -> {
                 try {
-                    val intent = if (uri.scheme == "intent") {
+                    val intent = if (scheme == "intent") {
                         Intent.parseUri(uri.toString(), Intent.URI_INTENT_SCHEME)
                     } else {
                         Intent(Intent.ACTION_VIEW, uri)
-                    }
+                    }.addCategory(Intent.CATEGORY_BROWSABLE)
                     startActivity(intent)
                 } catch (_: Exception) {
                     Toast.makeText(
                         this,
-                        "This link needs a compatible Android app or browser.",
+                        "No Android app is available to open this link.",
                         Toast.LENGTH_LONG
                     ).show()
                 }
                 true
             }
             else -> true
+        }
+    }
+
+    private fun openInDefaultBrowser(uri: Uri): Boolean {
+        return try {
+            startActivity(
+                Intent(Intent.ACTION_VIEW, uri)
+                    .addCategory(Intent.CATEGORY_BROWSABLE)
+            )
+            true
+        } catch (_: Exception) {
+            Toast.makeText(
+                this,
+                "No default browser is available to open this link.",
+                Toast.LENGTH_LONG
+            ).show()
+            true
         }
     }
 
