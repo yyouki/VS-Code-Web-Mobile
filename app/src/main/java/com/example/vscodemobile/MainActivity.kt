@@ -261,13 +261,11 @@ private class CursorOverlayView(
         sendHover(eventTime)
         val down = MotionEvent.obtain(eventTime, eventTime, MotionEvent.ACTION_DOWN, cursorX, cursorY, 0)
         down.source = InputDevice.SOURCE_MOUSE
-        down.setButtonState(MotionEvent.BUTTON_PRIMARY)
         target.dispatchTouchEvent(down)
         down.recycle()
 
         val up = MotionEvent.obtain(eventTime, eventTime + 1, MotionEvent.ACTION_UP, cursorX, cursorY, 0)
         up.source = InputDevice.SOURCE_MOUSE
-        up.setButtonState(MotionEvent.BUTTON_PRIMARY)
         target.dispatchTouchEvent(up)
         up.recycle()
     }
