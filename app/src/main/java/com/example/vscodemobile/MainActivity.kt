@@ -318,10 +318,11 @@ private class CursorOverlayView(
 
     private fun sendWheel(deltaX: Float, deltaY: Float) {
         val density = resources.displayMetrics.density.coerceAtLeast(1f)
-        val cssX = cursorX / density
-        val cssY = cursorY / density
-        val cssDeltaX = -deltaX / density
-        val cssDeltaY = -deltaY / density
+        val pageScale = target.scale.takeIf { it > 0f } ?: 1f
+        val cssX = cursorX / density / pageScale
+        val cssY = cursorY / density / pageScale
+        val cssDeltaX = -deltaX / density / pageScale
+        val cssDeltaY = -deltaY / density / pageScale
         val script = "(() => { const point = document.elementFromPoint(" +
             cssX + ", " + cssY + ") || document; point.dispatchEvent(new WheelEvent('wheel', {" +
             "bubbles: true, cancelable: true, deltaX: " + cssDeltaX +
@@ -814,12 +815,13 @@ class MainActivity : Activity() {
 
     private fun closeAuthenticationPopup() {
         authPopupDialog?.dismiss()
-        authPopupWebView?.let { popup ->
+        val popup = authPopupWebView
+        authPopupWebView = null // Clear first so onCloseWindow cannot recursively destroy it.
+        if (popup != null) {
             (popup.parent as? ViewGroup)?.removeView(popup)
             popup.stopLoading()
             popup.destroy()
         }
-        authPopupWebView = null
     }
 
     private fun handleExternalUrl(uri: Uri): Boolean {
@@ -2225,7 +2227,10 @@ class MainActivity : Activity() {
         }
 
         val currentHost = runCatching { Uri.parse(editor.url).host }.getOrNull()
-        if (currentHost != "vscode.dev") {
+        if (currentHost != "vscode.dev" &&
+            currentHost?.endsWith(".github.dev") != true &&
+            currentHost != "github.dev"
+        ) {
             editor.loadUrl(VSCODE_WEB_URL)
         }
     }
