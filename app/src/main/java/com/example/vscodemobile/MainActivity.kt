@@ -1307,8 +1307,9 @@ class MainActivity : Activity() {
         // WebView.zoomBy accepts a Float. Apply very large/small cumulative
         // changes in safe per-frame steps without imposing an app zoom ceiling.
         val factor = ratio.coerceIn(0.25f, 4f)
-        val changed = runCatching { view.zoomBy(factor) }.getOrDefault(false)
-        if (changed) {
+        // WebView.zoomBy returns Unit; WebView applies its own internal scale constraints.
+        val succeeded = runCatching { view.zoomBy(factor) }.isSuccess
+        if (succeeded) {
             appliedPageZoom *= factor
             if (!appliedPageZoom.isFinite() || appliedPageZoom <= 0f) {
                 appliedPageZoom = pageZoom
@@ -1318,7 +1319,7 @@ class MainActivity : Activity() {
                 scheduleZoomFrame(view)
             }
         } else {
-            // The WebView renderer has reached its own supported scale limit.
+            // Revert the displayed target only when the platform call itself throws.
             pageZoom = appliedPageZoom
             persistPageZoom()
         }
