@@ -74,11 +74,51 @@
     return name;
   }
 
-  function directoryHandle(uri, name, segments = []) {
+  async function renameHandle(handle, newName) {
+    safeName(newName);
+    const result = await nativeCall("rename", { uri: handle._uri, name: newName });
+    handle._uri = result.uri;
+    handle.name = result.name;
+    return handle;
+  }
+
+  async function moveHandle(handle, destinationOrName, requestedName) {
+    let destinationUri = handle._parentUri;
+    let newName = handle.name;
+
+    if (typeof destinationOrName === "string") {
+      newName = destinationOrName;
+    } else {
+      if (!destinationOrName || destinationOrName.kind !== "directory") {
+        throw new TypeError("Move destination must be a directory handle or a new name");
+      }
+      destinationUri = destinationOrName._uri;
+      if (typeof requestedName === "string") newName = requestedName;
+    }
+
+    if (!handle._parentUri || !destinationUri) {
+      throw new DOMException("This handle is not inside the selected workspace", "NotSupportedError");
+    }
+
+    safeName(newName);
+    const result = await nativeCall("move", {
+      uri: handle._uri,
+      sourceParentUri: handle._parentUri,
+      destinationUri,
+      name: newName
+    });
+    handle._uri = result.uri;
+    handle._parentUri = destinationUri;
+    handle.name = result.name;
+    return handle;
+  }
+
+  function directoryHandle(uri, name, segments = [], parentUri = null) {
     return {
       kind: "directory",
       name,
       _uri: uri,
+      _parentUri: parentUri,
       _segments: segments,
 
       async queryPermission() { return "granted"; },
@@ -100,7 +140,7 @@
           throw new DOMException("Directory not found", "NotFoundError");
         }
 
-        return directoryHandle(child.uri, child.name, [...segments, child.name]);
+        return directoryHandle(child.uri, child.name, [...segments, child.name], uri);
       },
 
       async getFileHandle(childName, options = {}) {
@@ -119,7 +159,7 @@
           throw new DOMException("File not found", "NotFoundError");
         }
 
-        return fileHandle(child.uri, child.name, child.mimeType, [...segments, child.name]);
+        return fileHandle(child.uri, child.name, child.mimeType, [...segments, child.name], uri);
       },
 
       async removeEntry(childName, options = {}) {
@@ -145,13 +185,21 @@
         return child.slice(segments.length);
       },
 
+      async rename(newName) {
+        return renameHandle(this, newName);
+      },
+
+      async move(destinationOrName, newName) {
+        return moveHandle(this, destinationOrName, newName);
+      },
+
       async *entries() {
         const children = await nativeCall("list", { uri });
         for (const child of children) {
           const childSegments = [...segments, child.name];
           const handle = child.isDirectory
-            ? directoryHandle(child.uri, child.name, childSegments)
-            : fileHandle(child.uri, child.name, child.mimeType, childSegments);
+            ? directoryHandle(child.uri, child.name, childSegments, uri)
+            : fileHandle(child.uri, child.name, child.mimeType, childSegments, uri);
           yield [child.name, handle];
         }
       },
@@ -170,11 +218,18 @@
     };
   }
 
-  function fileHandle(uri, name, mimeType = "application/octet-stream", segments = []) {
+  function fileHandle(
+    uri,
+    name,
+    mimeType = "application/octet-stream",
+    segments = [],
+    parentUri = null
+  ) {
     return {
       kind: "file",
       name,
       _uri: uri,
+      _parentUri: parentUri,
       _segments: segments,
 
       async queryPermission() { return "granted"; },
@@ -182,6 +237,14 @@
 
       async isSameEntry(other) {
         return Boolean(other && other.kind === "file" && other._uri === uri);
+      },
+
+      async rename(newName) {
+        return renameHandle(this, newName);
+      },
+
+      async move(destinationOrName, newName) {
+        return moveHandle(this, destinationOrName, newName);
       },
 
       async getFile() {
