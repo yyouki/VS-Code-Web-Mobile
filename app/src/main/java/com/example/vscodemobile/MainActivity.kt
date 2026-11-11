@@ -297,6 +297,7 @@ class MainActivity : Activity() {
     private var zoomLabelButton: Button? = null
     private var desktopModeButton: Button? = null
     private var cursorModeButton: Button? = null
+    private var headerCursorButton: Button? = null
     private var backInvokedCallback: OnBackInvokedCallback? = null
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -376,6 +377,8 @@ class MainActivity : Activity() {
 
         header.addView(makeHeaderButton("Folder") { openFolderFromToolbar() })
         header.addView(makeHeaderButton("Remote") { showRemoteDialog() })
+        headerCursorButton = makeHeaderButton("Ptr") { toggleCursorMode() }
+        header.addView(headerCursorButton)
         header.addView(makeHeaderButton("Keys") { toggleKeyboardBar() })
         header.addView(makeHeaderButton("Info") { showAboutDialog() })
         root.addView(
@@ -1024,6 +1027,22 @@ class MainActivity : Activity() {
         val button = makeKeyButton(label)
         button.setOnClickListener { onClick() }
         rowContent(row).addView(button)
+    }
+
+    private fun toggleCursorMode() {
+        cursorModeEnabled = !cursorModeEnabled
+        cursorOverlay.visibility = if (cursorModeEnabled) View.VISIBLE else View.GONE
+        cursorModeButton?.text = if (cursorModeEnabled) "Cursor ON" else "Cursor OFF"
+        headerCursorButton?.text = if (cursorModeEnabled) "Ptr ✓" else "Ptr"
+        Toast.makeText(
+            this,
+            if (cursorModeEnabled) {
+                "Pointer mode: drag one finger to move, release to click, use two fingers to scroll."
+            } else {
+                "Pointer mode disabled. Normal touch and physical mouse input are active."
+            },
+            Toast.LENGTH_LONG
+        ).show()
     }
 
     private fun showInternalKeyboard() {
