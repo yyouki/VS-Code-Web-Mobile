@@ -1172,7 +1172,16 @@ class MainActivity : Activity() {
             Intent.FLAG_GRANT_READ_URI_PERMISSION or
                 Intent.FLAG_GRANT_WRITE_URI_PERMISSION
             )
-        runCatching { contentResolver.takePersistableUriPermission(uri, grants) }
+        if (grants != 0) {
+            runCatching { contentResolver.takePersistableUriPermission(uri, grants) }
+                .onFailure {
+                    Toast.makeText(
+                        this,
+                        "Folder selected for this session, but Android could not persist its permission.",
+                        Toast.LENGTH_LONG
+                    ).show()
+                }
+        }
         selectedTreeUri = uri
         getSharedPreferences(PREFERENCES, MODE_PRIVATE)
             .edit()
@@ -1182,14 +1191,26 @@ class MainActivity : Activity() {
 
     private fun displayName(uri: Uri): String {
         var name = "Selected folder"
-        contentResolver.query(
-            uri,
-            arrayOf(DocumentsContract.Document.COLUMN_DISPLAY_NAME),
-            null,
-            null,
-            null
-        )?.use { cursor ->
-            if (cursor.moveToFirst()) name = cursor.getString(0) ?: name
+        // ACTION_OPEN_DOCUMENT_TREE returns a tree URI; query its root document URI instead.
+        val queryUri = runCatching {
+            if (DocumentsContract.isTreeUri(uri)) {
+                val rootDocumentId = DocumentsContract.getTreeDocumentId(uri)
+                DocumentsContract.buildDocumentUriUsingTree(uri, rootDocumentId)
+            } else {
+                uri
+            }
+        }.getOrDefault(uri)
+
+        runCatching {
+            contentResolver.query(
+                queryUri,
+                arrayOf(DocumentsContract.Document.COLUMN_DISPLAY_NAME),
+                null,
+                null,
+                null
+            )?.use { cursor ->
+                if (cursor.moveToFirst()) name = cursor.getString(0) ?: name
+            }
         }
         return name
     }
