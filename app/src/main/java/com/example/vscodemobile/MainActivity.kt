@@ -248,7 +248,7 @@ private class CursorOverlayView(
                 canvas.drawLine(centerX - arm, centerY, centerX + arm, centerY, accentPaint)
                 canvas.drawLine(centerX, centerY - arm, centerX, centerY + arm, accentPaint)
                 canvas.drawCircle(centerX, centerY, size * 0.12f, accentPaint)
-                outlinePaint.strokeWidth = dp(1.6f.toInt())
+                outlinePaint.strokeWidth = resources.displayMetrics.density * 1.6f
             }
             POINTER_STYLE_RING -> {
                 outlinePaint.strokeWidth = dp(4)
@@ -256,7 +256,7 @@ private class CursorOverlayView(
                 canvas.drawCircle(centerX, centerY, size * 0.44f, outlinePaint)
                 canvas.drawCircle(centerX, centerY, size * 0.44f, accentPaint)
                 canvas.drawCircle(centerX, centerY, size * 0.08f, fillPaint)
-                outlinePaint.strokeWidth = dp(1.6f.toInt())
+                outlinePaint.strokeWidth = resources.displayMetrics.density * 1.6f
             }
             POINTER_STYLE_DOT -> {
                 canvas.drawCircle(centerX, centerY, size * 0.24f, outlinePaint)
@@ -468,6 +468,7 @@ class MainActivity : Activity() {
         cursorColor = preferences.getInt(KEY_CURSOR_COLOR, Color.WHITE)
         cursorStyle = preferences.getInt(KEY_CURSOR_STYLE, POINTER_STYLE_ARROW)
             .coerceIn(POINTER_STYLE_ARROW, POINTER_STYLE_DOT)
+        cursorModeEnabled = preferences.getBoolean(KEY_CURSOR_MODE_ENABLED, false)
         pinchZoomEnabled = preferences.getBoolean(KEY_PINCH_ZOOM_ENABLED, true)
         viewportWidth = preferences.getInt(KEY_VIEWPORT_WIDTH, 0)
         viewportHeight = preferences.getInt(KEY_VIEWPORT_HEIGHT, 0)
@@ -530,7 +531,7 @@ class MainActivity : Activity() {
 
         header.addView(makeHeaderButton("Folder") { openFolderFromToolbar() })
         header.addView(makeHeaderButton("Remote") { showRemoteDialog() })
-        headerCursorButton = makeHeaderButton("Ptr") { toggleCursorMode() }.apply {
+        headerCursorButton = makeHeaderButton(if (cursorModeEnabled) "Ptr ✓" else "Ptr") { toggleCursorMode() }.apply {
             setOnLongClickListener {
                 showAppSettingsDialog()
                 true
@@ -751,7 +752,7 @@ class MainActivity : Activity() {
             ::queuePinchZoom,
             ::persistPageZoom
         ).apply {
-            visibility = View.GONE
+            visibility = if (cursorModeEnabled) View.VISIBLE else View.GONE
             updateSettings(cursorSizeDp, cursorSpeed, cursorColor, cursorStyle)
         }
         editorContainer.addView(
@@ -788,7 +789,7 @@ class MainActivity : Activity() {
             setOnClickListener { toggleDesktopMode() }
         }
         rowContent(keyboardBar).addView(desktopModeButton)
-        cursorModeButton = makeKeyButton("Cursor OFF").apply {
+        cursorModeButton = makeKeyButton(if (cursorModeEnabled) "Cursor ON" else "Cursor OFF").apply {
             setOnClickListener { toggleCursorMode() }
             setOnLongClickListener {
                 showAppSettingsDialog()
@@ -1336,8 +1337,13 @@ class MainActivity : Activity() {
             })
         }
 
+        val defaultResolutionLabel = if (desktopMode) {
+            "Desktop default (1280 × 720)"
+        } else {
+            "Default device"
+        }
         val resolutions = listOf(
-            Triple(0, 0, "Default device"),
+            Triple(0, 0, defaultResolutionLabel),
             Triple(1280, 720, "1280 × 720"),
             Triple(1600, 900, "1600 × 900"),
             Triple(1920, 1080, "1920 × 1080"),
@@ -1361,6 +1367,12 @@ class MainActivity : Activity() {
         }.takeIf { it >= 0 } ?: 0
         resolutionGroup.check(selectedResolution + 1)
         panel.addView(resolutionGroup)
+        panel.addView(TextView(this).apply {
+            text = "These profiles set the browser's CSS viewport. They do not change the phone's physical screen resolution."
+            textSize = 12f
+            setTextColor(Color.DKGRAY)
+            setPadding(0, dp(2), 0, dp(4))
+        })
 
         addSection("Zoom")
         val pinchSwitch = Switch(this).apply {
@@ -1514,6 +1526,7 @@ class MainActivity : Activity() {
                     .putInt(KEY_CURSOR_SIZE, cursorSizeDp)
                     .putInt(KEY_CURSOR_COLOR, cursorColor)
                     .putInt(KEY_CURSOR_STYLE, cursorStyle)
+                    .putBoolean(KEY_CURSOR_MODE_ENABLED, cursorModeEnabled)
                     .putBoolean(KEY_KEYBAR_VISIBLE, keyBarVisible)
                     .apply()
 
@@ -1530,6 +1543,10 @@ class MainActivity : Activity() {
 
     private fun toggleCursorMode() {
         cursorModeEnabled = !cursorModeEnabled
+        getSharedPreferences(PREFERENCES, MODE_PRIVATE)
+            .edit()
+            .putBoolean(KEY_CURSOR_MODE_ENABLED, cursorModeEnabled)
+            .apply()
         cursorOverlay.visibility = if (cursorModeEnabled) View.VISIBLE else View.GONE
         cursorModeButton?.text = if (cursorModeEnabled) "Cursor ON" else "Cursor OFF"
         headerCursorButton?.text = if (cursorModeEnabled) "Ptr ✓" else "Ptr"
@@ -2526,6 +2543,7 @@ class MainActivity : Activity() {
         private const val KEY_CURSOR_SIZE = "cursor_size"
         private const val KEY_CURSOR_COLOR = "cursor_color"
         private const val KEY_CURSOR_STYLE = "cursor_style"
+        private const val KEY_CURSOR_MODE_ENABLED = "cursor_mode_enabled"
         private const val KEY_PINCH_ZOOM_ENABLED = "pinch_zoom_enabled"
         private const val KEY_VIEWPORT_WIDTH = "viewport_width"
         private const val KEY_VIEWPORT_HEIGHT = "viewport_height"
